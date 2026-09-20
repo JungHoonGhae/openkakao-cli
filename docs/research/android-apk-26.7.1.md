@@ -132,3 +132,7 @@ The production change is intentionally narrow:
 
 No Android identity constants, auth transformations, endpoint bypasses, or
 write operations were added.
+
+A [2026-09-07 receive-envelope follow-up](message-envelopes-26.7.md) traces
+`MSG.chatLog`, the `message` field, and `SYNCMSG.chatLogs`, cross-checks the
+signed Mac models, and fixes watcher decoding and resume cursor regression.

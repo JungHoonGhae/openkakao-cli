@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use owo_colors::OwoColorize;
 
@@ -94,38 +92,23 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
     });
 
     // 1. KakaoTalk.app installed version
-    let app_plist = PathBuf::from("/Applications/KakaoTalk.app/Contents/Info.plist");
-    if app_plist.exists() {
-        match plist::from_file::<_, plist::Dictionary>(&app_plist) {
-            Ok(dict) => {
-                let version = dict
-                    .get("CFBundleShortVersionString")
-                    .and_then(|v| v.as_string())
-                    .unwrap_or("unknown");
-                installed_version = Some(version.to_string());
-                let bundle_id = dict
-                    .get("CFBundleIdentifier")
-                    .and_then(|v| v.as_string())
-                    .unwrap_or("unknown");
-                checks.push(Check {
-                    name: "KakaoTalk.app".into(),
-                    status: CheckStatus::Ok,
-                    detail: format!("v{} ({})", version, bundle_id),
-                });
-            }
-            Err(e) => {
-                checks.push(Check {
-                    name: "KakaoTalk.app".into(),
-                    status: CheckStatus::Warn,
-                    detail: format!("Installed but cannot read Info.plist: {}", e),
-                });
-            }
-        }
+    if let Some(app) = openkakao_cli::kakaotalk_app::installed_app() {
+        installed_version = Some(app.version.clone());
+        checks.push(Check {
+            name: "KakaoTalk.app".into(),
+            status: CheckStatus::Ok,
+            detail: format!(
+                "v{} ({}) at {}",
+                app.version,
+                app.bundle_id,
+                app.path.display()
+            ),
+        });
     } else {
         checks.push(Check {
             name: "KakaoTalk.app".into(),
             status: CheckStatus::Fail,
-            detail: "Not found in /Applications".into(),
+            detail: "No KakaoTalk bundle with the expected identifier in /Applications or ~/Applications".into(),
         });
     }
 

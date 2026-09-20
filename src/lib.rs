@@ -1,6 +1,7 @@
 pub mod credentials;
 pub mod error;
 pub mod human_auth;
+pub mod kakaotalk_app;
 pub mod local_db;
 pub mod loco;
 pub mod message_db;

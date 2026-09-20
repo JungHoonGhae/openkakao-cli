@@ -247,7 +247,9 @@ mod imp {
     const COMPOSER_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(50);
     const SNAPSHOT_MAX_DEPTH: usize = 128;
     const SNAPSHOT_MAX_NODES: usize = 20_000;
-    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(5);
+    // A large chat list can exceed five seconds on newer KakaoTalk/macOS builds.
+    // Keep a firm deadline while allowing the normal AX walk to finish.
+    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(30);
     const AX_MESSAGE_TIMEOUT_SECS: f32 = 1.0;
 
     /// Find the running, Kakao-signed KakaoTalk process.
@@ -458,7 +460,12 @@ mod imp {
         let node = snapshot_bounded(root, 0, &mut budget);
         if budget.exhausted {
             anyhow::bail!(
-                "KakaoTalk AX snapshot exceeded its depth/node/time safety budget; refusing incomplete UI data"
+                "KakaoTalk AX snapshot exceeded its safety budget ({} nodes in {:.1}s; limits: depth {}, nodes {}, time {}s); refusing incomplete UI data. Close extra KakaoTalk windows or reduce the visible chat list and retry",
+                budget.nodes,
+                budget.started_at.elapsed().as_secs_f64(),
+                SNAPSHOT_MAX_DEPTH,
+                SNAPSHOT_MAX_NODES,
+                SNAPSHOT_MAX_DURATION.as_secs()
             );
         }
         Ok(node)

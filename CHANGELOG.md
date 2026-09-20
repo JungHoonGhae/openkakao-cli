@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-09-20
+
+### Fixed
+- `ax-read` allows up to 30 seconds for a bounded Accessibility snapshot on larger or slower KakaoTalk chat lists and reports the snapshot size and limits when it still cannot finish. This addresses the five-second failure reported in [#58](https://github.com/JungHoonGhae/openkakao-cli/issues/58).
+- `doctor` and the installed-app version lookup recognize both `KakaoTalk.app` and `카카오톡.app` in system or user Applications folders, checking the bundle identifier before accepting an installation.
+- LOCO `watch` decodes nested `MSG.chatLog` and batched `SYNCMSG.chatLogs`, displays the current `message` field while retaining legacy `msg` support, and prevents older received logs from moving resume cursors backward.
+
 ### Changed
+- Configuration examples use the current Doppler project and config names.
 - GitHub releases now keep the curated changelog section and append GitHub-generated PR attribution and first-time-contributor notes, so contributors receive the platform's standard release credit.
 
 ## [1.8.1] - 2026-09-03

@@ -64,7 +64,11 @@ pub fn render_message_content(body: &bson::Document, msg_type: i32) -> String {
     };
 
     match msg_type {
-        1 => body.get_str("msg").unwrap_or("").to_string(),
+        1 => body
+            .get_str("message")
+            .or_else(|_| body.get_str("msg"))
+            .unwrap_or("")
+            .to_string(),
         2 => render_photo_content(&attachment),
         3 => render_video_content(&attachment),
         5 => "연락처를 보냈습니다.".to_string(),
@@ -78,7 +82,8 @@ pub fn render_message_content(body: &bson::Document, msg_type: i32) -> String {
         27 => render_multi_photo_content(&attachment),
         71 | 72 => "투표를 보냈습니다.".to_string(),
         _ => body
-            .get_str("msg")
+            .get_str("message")
+            .or_else(|_| body.get_str("msg"))
             .map(String::from)
             .unwrap_or_else(|_| format!("[type={}]", msg_type)),
     }
@@ -509,6 +514,19 @@ pub fn get_creds() -> Result<crate::model::KakaoCredentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bson::doc;
+
+    #[test]
+    fn message_key_takes_precedence_even_when_empty_or_type_unknown() {
+        for msg_type in [1, 999] {
+            let body = doc! {"message": "", "msg": "must not leak into empty text"};
+            assert_eq!(render_message_content(&body, msg_type), "");
+            let body = doc! {"message": "future content", "msg": "legacy"};
+            assert_eq!(render_message_content(&body, msg_type), "future content");
+            let legacy = doc! {"msg": "legacy text"};
+            assert_eq!(render_message_content(&legacy, msg_type), "legacy text");
+        }
+    }
 
     #[test]
     fn test_mask_token_short() {
