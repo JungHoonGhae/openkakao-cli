@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `login --manual` registers an unregistered Mac again through KakaoTalk's current `passcodeLogin/generate` + `passcodeLogin/registerDevice` routes, then retries the login; `device_uuid` is derived from a hash of `IOPlatformUUID` instead of the raw value, which the registration endpoint rejects. Registration polling stops when the passcode window closes and the #20/#22 account-block warning is kept for failures. LOCO checkin to IP-addressed servers accepts the `kakao.com` certificate again (fixes [#61](https://github.com/JungHoonGhae/openkakao-cli/issues/61)). ([#60](https://github.com/JungHoonGhae/openkakao-cli/pull/60), thanks [@NetRiceCake](https://github.com/NetRiceCake)).
+
 ## [1.8.3] - 2026-10-11
 
 ### Fixed
