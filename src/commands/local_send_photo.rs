@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::ax_send;
-use crate::state::{mark_unattended_send_attempt, record_guard, unattended_send_remaining_secs};
 use crate::util::{confirm, escape_terminal_text};
 
 const MAX_PHOTO_BYTES: u64 = 50 * 1024 * 1024;
@@ -16,12 +15,6 @@ pub struct LocalSendPhotoOptions {
     pub skip_confirm: bool,
     pub dry_run: bool,
     pub json: bool,
-    pub require_device_auth: bool,
-    pub min_unattended_send_interval_secs: u64,
-}
-
-pub(crate) fn device_auth_required(unattended: bool, allow_non_interactive_send: bool) -> bool {
-    !(unattended && allow_non_interactive_send)
 }
 
 fn validate_photo_utf8_path(path: &Path, display: &str) -> Result<()> {
@@ -103,21 +96,7 @@ pub fn cmd_local_send_photo(opts: LocalSendPhotoOptions) -> Result<()> {
         }
     }
 
-    if !opts.require_device_auth {
-        if let Some(remaining) =
-            unattended_send_remaining_secs(opts.min_unattended_send_interval_secs)?
-        {
-            record_guard("unattended_send_rate_limited")?;
-            anyhow::bail!(
-                "unattended send is rate-limited for {remaining}s; wait or raise safety.min_unattended_send_interval_secs"
-            );
-        }
-        mark_unattended_send_attempt()?;
-        eprintln!(
-            "Device-owner authentication bypassed by explicit unattended-send authorization."
-        );
-    }
-    ax_send::send_photo_via_ax(&opts.chat_name, &path, opts.require_device_auth)?;
+    ax_send::send_photo_via_ax(&opts.chat_name, &path)?;
     if opts.json {
         crate::util::output_json(&serde_json::json!({
             "chat_name": opts.chat_name,
@@ -175,13 +154,5 @@ mod tests {
         let path = Path::new(OsStr::from_bytes(b"/tmp/\xffdir/photo.png"));
         let error = validate_photo_utf8_path(path, "test").unwrap_err();
         assert!(error.to_string().contains("not valid UTF-8"));
-    }
-
-    #[test]
-    fn unattended_send_requires_both_authorization_flags_to_skip_device_auth() {
-        assert!(device_auth_required(false, false));
-        assert!(device_auth_required(true, false));
-        assert!(device_auth_required(false, true));
-        assert!(!device_auth_required(true, true));
     }
 }

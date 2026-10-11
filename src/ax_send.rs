@@ -1678,7 +1678,6 @@ end run
     pub fn send_photo_via_ax_classified(
         chat_display_name: &str,
         photo_path: &std::path::Path,
-        require_device_auth: bool,
     ) -> Result<super::AxDeliveryOutcome> {
         let _display_wake = hold_display_awake()?;
         let pid = find_kakaotalk_pid()?;
@@ -1765,13 +1764,11 @@ end run
         let (preview_sheet, send_button) = wait_for_clipboard_image_preview(&window)?;
         let preview_has_filename = false;
 
-        if require_device_auth {
-            let authenticated_target =
-                crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-            openkakao_cli::human_auth::require_device_owner_auth(&format!(
-                "Approve one KakaoTalk photo to ‘{authenticated_target}’ after reviewing the terminal preview"
-            ))?;
-        }
+        let authenticated_target =
+            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+            "Approve one KakaoTalk photo to ‘{authenticated_target}’ after reviewing the terminal preview"
+        ))?;
 
         // Revalidate the exact recipient and previewed basename immediately
         // before the first action that can upload the photo.
@@ -2134,7 +2131,6 @@ mod stub {
     pub fn send_photo_via_ax_classified(
         _chat_display_name: &str,
         _photo_path: &std::path::Path,
-        _require_device_auth: bool,
     ) -> Result<super::AxDeliveryOutcome> {
         Err(anyhow!(
             "local-send-photo (AX automation) is only supported on macOS"
@@ -2188,11 +2184,6 @@ pub fn send_via_ax(chat_display_name: &str, message: &str) -> anyhow::Result<()>
 pub fn send_photo_via_ax(
     chat_display_name: &str,
     photo_path: &std::path::Path,
-    require_device_auth: bool,
 ) -> anyhow::Result<()> {
-    outcome_to_result(send_photo_via_ax_classified(
-        chat_display_name,
-        photo_path,
-        require_device_auth,
-    )?)
+    outcome_to_result(send_photo_via_ax_classified(chat_display_name, photo_path)?)
 }

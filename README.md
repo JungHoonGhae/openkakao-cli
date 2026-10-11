@@ -225,7 +225,7 @@ openkakao-cli safe-send approve <intent_id>
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드와 macOS device-owner 인증을 모두 통과해야 합니다. 직접 `local-send`로 실전송할 때는 항상 같은 OS 인증이 필요합니다. `local-send-photo`도 기본적으로 같지만, `--unattended`와 `--allow-non-interactive-send`를 함께 지정한 명시적 무인 승인 하에서는(두 플래그는 config의 `[mode] unattended = true` + `[send] allow_non_interactive = true`로도 설정 가능) 예약된 사진 전송을 위해 이 인증을 건너뛰며, 다른 무인 전송과 같은 `safety.min_unattended_send_interval_secs` 스로틀을 따릅니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 Return 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, Return 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 채팅 목록에 같은 표시 이름이 둘 이상이면 거부합니다. 선택된 행과 입력값을 Return 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
+제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드와 macOS device-owner 인증을 모두 통과해야 합니다. 직접 `local-send`·`local-send-photo`로 실전송할 때도 같은 OS 인증이 필요합니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 Return 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, Return 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 채팅 목록에 같은 표시 이름이 둘 이상이면 거부합니다. 선택된 행과 입력값을 Return 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
 
 이 경로는 `openkakao-cli`가 macOS Accessibility/CoreGraphics를 직접 호출하는 네이티브 구현입니다. Orca나 에이전트의 `$computer-use` 스킬은 설치·실행에 필요하지 않으며, 범용 UI 클릭/키 입력 대신 `safe-send propose`와 사람의 승인 interface를 사용합니다.
 
