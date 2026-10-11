@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `local-send` and `ax-read` can open chats again on KakaoTalk builds whose chat-list rows expose no `AXPress`/`AXConfirm` action (cells only offer `AXShowMenu`), which previously failed with "exposes no safe element-scoped open action". The fallback raises KakaoTalk, requires a system-wide hit test to prove the exact row is the topmost element at its center, double-clicks it through the HID tap (KakaoTalk ignores pid-posted mouse events), and restores the cursor. A process-wide Return is still never used to open a row. The main window is also raised first so the chat-list table can take focus while a chat window is already open.
+
 ## [1.8.2] - 2026-09-20
 
 ### Fixed
