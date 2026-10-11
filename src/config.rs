@@ -59,12 +59,13 @@ pub struct SafetyConfig {
     /// Disabled by default to protect against account bans.
     #[serde(default)]
     pub allow_loco_write: bool,
-    /// Enable AX-automation-based `local-send` (no server contact, drives the
-    /// KakaoTalk UI directly). Disabled by default since it still sends real
-    /// messages from a real KakaoTalk window.
+    /// Enable AX-automation-based `local-send`/`local-send-photo` (no server
+    /// contact, drives the KakaoTalk UI directly). Disabled by default since
+    /// they still send real messages from a real KakaoTalk window.
     #[serde(default)]
     pub allow_ax_send: bool,
-    /// Chat display names `local-send` is allowed to target. AX-send matches
+    /// Chat display names `local-send`/`local-send-photo` are allowed to
+    /// target. AX-send matches
     /// chats by display-name text scraped from the UI, not a chat-id (the
     /// local DB it would normally cross-check against is unreadable on
     /// current KakaoTalk builds), so an exact-match allowlist is the only

@@ -15,7 +15,7 @@ brew tap JungHoonGhae/openkakao
 brew install openkakao-cli
 ```
 
-Allowlist the chat you intend to send to (required before any real send — `local-send` has no chat-id to cross-check against, so this is the only guard against sending to the wrong chat):
+Allowlist the chat you intend to send to (required before any real send — `local-send`/`local-send-photo` have no chat-id to cross-check against, so this is the only guard against sending to the wrong chat):
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -31,9 +31,13 @@ openkakao-cli ax-read "chat display name" -n 20
 # Preview a send, then actually send it
 openkakao-cli local-send "chat display name" "Hello from CLI!" --dry-run
 openkakao-cli local-send "chat display name" "Hello from CLI!" -y
+
+# Preview a photo send, then send it through the official app
+openkakao-cli local-send-photo "chat display name" ./family.jpg --dry-run
+openkakao-cli local-send-photo "chat display name" ./family.jpg -y
 ```
 
-See [local-send / ax-read](/docs/cli/local-send) for the full reference.
+See [local-send / local-send-photo / ax-read](/docs/cli/local-send) for the full reference.
 
 ## Introduction
 

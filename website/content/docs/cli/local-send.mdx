@@ -1,19 +1,19 @@
 ---
-title: local-send / ax-read
-description: Send and read real messages without a server session, by driving the KakaoTalk UI directly.
+title: local-send / local-send-photo / ax-read
+description: Send text or photos and read real messages without a server session, by driving the KakaoTalk UI directly.
 ---
 
 <Callout title="No server contact, no local DB dependency">
-  `local-send` and `ax-read` drive the real KakaoTalk macOS app through the Accessibility (AX) API — selecting a chat row, typing into the composer, and reading rendered message bubbles. Neither one talks to Kakao's servers or the local SQLCipher database. This is why they keep working even while [server login is broken](/docs/getting-started/authentication) and the [local DB is unreliable](/docs/cli/local-db) on current KakaoTalk builds.
+  `local-send`, `local-send-photo`, and `ax-read` drive the real KakaoTalk macOS app through the Accessibility (AX) API — selecting a chat row, typing into the composer or driving the native file picker, and reading rendered message bubbles. None of them talk to Kakao's servers or the local SQLCipher database. This is why they keep working even while [server login is broken](/docs/getting-started/authentication) and the [local DB is unreliable](/docs/cli/local-db) on current KakaoTalk builds.
 </Callout>
 
 ## How it works
 
-Both commands find the target chat by its **exact display name**, the same text shown in KakaoTalk's chat list — not a chat-id. There is no local database to cross-check the target against anymore, so:
+All three commands find the target chat by its **exact display name**, the same text shown in KakaoTalk's chat list — not a chat-id. There is no local database to cross-check the target against anymore, so:
 
 - Matching is exact, not substring — a search for `"Alice"` will not accidentally match an `"Alice & Bob"` group chat.
-- If more than one visible chat shares the exact same display name, both commands refuse to guess and return an error.
-- `local-send` additionally requires the chat to be listed in a config allowlist before it will send for real (see [Safety](#safety) below).
+- If more than one visible chat shares the exact same display name, all three refuse to guess and return an error.
+- `local-send` and `local-send-photo` additionally require the chat to be listed in a config allowlist before they will send for real (see [Safety](#safety) below).
 
 Requirements:
 - KakaoTalk.app installed, running, and already logged in on this Mac
@@ -44,6 +44,32 @@ Before typing, `local-send` verifies the running process has KakaoTalk's officia
 
 This is a native macOS Accessibility/CoreGraphics path inside `openkakao-cli`; Orca and agent `$computer-use` skills are not runtime dependencies.
 
+## local-send-photo
+
+```bash
+openkakao-cli local-send-photo <chat_name> <file> [OPTIONS]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip the confirmation prompt |
+| `--dry-run` | Preview the action without sending |
+| `--json` | Output as JSON (global flag) |
+
+```bash
+# Preview first
+openkakao-cli local-send-photo "chat display name" ./family.jpg --dry-run
+
+# Actually send
+openkakao-cli local-send-photo "chat display name" ./family.jpg -y
+```
+
+The file is validated before anything is driven: the path is canonicalized (symlinks resolve to their target) and must be a valid UTF-8 path to a regular file between 1 byte and 50 MiB whose content is actually a JPEG, PNG, GIF, WebP, or HEIF image — a renamed non-image file is rejected regardless of its extension.
+
+Like `local-send`, the command verifies KakaoTalk's code signature, requires one unique exact-name chat row, and refuses to touch a chat whose composer already holds a draft. It then drives KakaoTalk's native file picker primarily through semantic AX controls, with focus-verified coordinate fallbacks: the unique Send Files (⌘O) button opens the picker, the photo's absolute path is entered via Go to Folder, and the picker must show the selected file's exact name. Pressing Open only advances the picker to KakaoTalk's own single-file attachment preview — it does not send. macOS device-owner authentication then runs, and the recipient window and the previewed filename are read back and revalidated immediately before the final Send button is pressed. Completion is reported only when one additional outgoing `[사진]` (photo) bubble appears in the target window; any ambiguous outcome once Send may have been pressed is reported as `uncertain` — inspect the chat in KakaoTalk before retrying, the photo may already have been sent.
+
+`local-send-photo` shares `local-send`'s config gates (see [Safety](#safety) below), which are also skipped for `--dry-run`.
+
 ## ax-read
 
 ```bash
@@ -66,7 +92,7 @@ openkakao-cli ax-read "chat display name" --json
 
 ## Safety
 
-`local-send` is disabled by default and needs two things enabled in `~/.config/openkakao/config.toml`:
+`local-send` and `local-send-photo` are disabled by default and need two things enabled in `~/.config/openkakao/config.toml`:
 
 ```toml
 [safety]
@@ -74,20 +100,21 @@ allow_ax_send = true
 allowed_send_chats = ["chat display name you want to allow"]
 ```
 
-- `allow_ax_send` — the general opt-in, since `local-send` types text and hits Enter in a real KakaoTalk window on your behalf.
-- `allowed_send_chats` — an **exact-match allowlist**. A chat not on this list is rejected before anything is typed. At runtime, a duplicate exact display name is also refused, and the selected row is read back before Enter.
+- `allow_ax_send` — the general opt-in, since both commands drive a real KakaoTalk window to send on your behalf.
+- `allowed_send_chats` — an **exact-match allowlist**. A chat not on this list is rejected before anything is typed or attached. At runtime, a duplicate exact display name is also refused, and the selected row is read back before the send is committed.
 
-Real sends also require macOS device-owner authentication. `-y` skips only the CLI's ordinary confirmation prompt; it does not bypass Touch ID/login-password authentication.
+Real sends also require macOS device-owner authentication. `-y` skips only the CLI's ordinary confirmation prompt; it does not bypass Touch ID/login-password authentication. This applies to `local-send-photo` as well.
 
 Both checks are skipped for `--dry-run`, so you can preview against any chat name without touching config.
 
-`ax-read` has no equivalent gate — it only reads what's already rendered on screen, so there's nothing to protect against beyond the exact-match/ambiguity check both commands share.
+`ax-read` has no equivalent gate — it only reads what's already rendered on screen, so there's nothing to protect against beyond the exact-match/ambiguity check all three commands share.
 
 ## When to use this vs local DB vs LOCO
 
 | Scenario | Recommended |
 |----------|-------------|
 | Send a real message, server login broken | `local-send` |
+| Send a photo, server login broken | `local-send-photo` |
 | Read what's currently visible in a chat, server login broken | `ax-read` |
 | Full message history, server login working | `read` (LOCO) |
 | Full message history, server login broken | not currently available — `ax-read` only sees what's rendered |

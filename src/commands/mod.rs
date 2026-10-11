@@ -6,6 +6,7 @@ pub mod chats;
 pub mod doctor;
 pub mod download;
 pub mod local_send;
+pub mod local_send_photo;
 pub mod members;
 pub mod notif_watch;
 pub mod probe;

@@ -71,6 +71,8 @@ brew install openkakao-cli
 # 2. Send a message — no server contact, drives the real KakaoTalk UI directly
 openkakao-cli local-send "chat display name" "Hello from CLI!" --dry-run   # preview
 openkakao-cli local-send "chat display name" "Hello from CLI!" -y         # actually send
+openkakao-cli local-send-photo "chat display name" ./family.jpg --dry-run  # photo preview
+openkakao-cli local-send-photo "chat display name" ./family.jpg -y        # send photo via the official app
 
 # 3. Read recent messages — same AX approach, scrapes what's rendered on screen
 openkakao-cli ax-read "chat display name" -n 20
@@ -168,7 +170,7 @@ npx skills add JungHoonGhae/skills@openkakao-cli
 - Preview any write with `--dry-run` before executing
 - Send to memo chat with `send --me` for quick testing
 - LOCO write ops disabled by default — opt in with `safety.allow_loco_write = true`
-- `local-send` also disabled by default — opt in with `safety.allow_ax_send = true` plus a `safety.allowed_send_chats` allowlist
+- `local-send`/`local-send-photo` also disabled by default — opt in with `safety.allow_ax_send = true` plus a `safety.allowed_send_chats` allowlist
 - Prefer `safe-send` for agent-driven sends — proposals only touch a local outbox and actual approval requires both a human at an interactive terminal and macOS Touch ID/login-password authentication
 
 ## Where It Fits
@@ -189,7 +191,7 @@ To protect your account, commands that write to the server require explicit opt-
 allow_loco_write = true
 ```
 
-`local-send` (AX-based real sending) is also disabled by default as of v1.4.0, and needs its own opt-in plus a **chat allowlist**. There is no chat-id left to cross-check the target against, so a real send combines the allowlist with a unique exact-name match in the chat list, KakaoTalk code-signature verification, and macOS user authentication immediately before sending:
+`local-send` and `local-send-photo` (AX-based real sending) are also disabled by default (`local-send` since v1.4.0), and need their own opt-in plus a **chat allowlist**. There is no chat-id left to cross-check the target against, so a real send combines the allowlist with a unique exact-name match in the chat list, KakaoTalk code-signature verification, and macOS user authentication immediately before sending:
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -215,7 +217,7 @@ openkakao-cli safe-send approve <intent_id>
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires both the interactive 12-character code and macOS device-owner authentication. A direct real `local-send` requires the same OS authentication. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the final Return key is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after Return may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, the chat list must contain one unique exact-name row, and a non-empty composer is refused. The selected row and composer are read back immediately before Return, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
+Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires both the interactive 12-character code and macOS device-owner authentication. A direct real `local-send` or `local-send-photo` requires the same OS authentication. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the final Return key is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after Return may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, the chat list must contain one unique exact-name row, and a non-empty composer is refused. The selected row and composer are read back immediately before Return, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
 
 This path is implemented directly with macOS Accessibility/CoreGraphics inside `openkakao-cli`. Orca and agent `$computer-use` skills are not installation or runtime dependencies; agents use the domain-level `safe-send propose` plus human approval instead of generic UI click or keyboard actions.
 
@@ -233,10 +235,11 @@ Read-only operations are always available:
 | `read <id> --rest` | Read messages via REST | REST |
 | `send ... --dry-run` | Preview send without executing | None |
 | `local-send ... --dry-run` | Preview an AX send without executing | None |
+| `local-send-photo ... --dry-run` | Preview an AX photo send without executing | None |
 | `safe-send propose/list` | Persist or inspect send proposals (never sends) | None |
 
 > [!NOTE]
-> `local-send`/`ax-read`/`ax-watch` need to find KakaoTalk's **main chat-list window** via the macOS Accessibility API. If that window is **minimized**, or on a different **macOS Space** (virtual desktop) than the one you're currently viewing, it won't be found — restoring it automatically isn't possible without risking a stolen foreground focus, so these commands give a clear error and ask you to restore it by hand instead. If this keeps happening, a one-time fix is: right-click the KakaoTalk Dock icon → Options → Assign To → All Desktops.
+> `local-send`/`local-send-photo`/`ax-read`/`ax-watch` need to find KakaoTalk's **main chat-list window** via the macOS Accessibility API. If that window is **minimized**, or on a different **macOS Space** (virtual desktop) than the one you're currently viewing, it won't be found — restoring it automatically isn't possible without risking a stolen foreground focus, so these commands give a clear error and ask you to restore it by hand instead. If this keeps happening, a one-time fix is: right-click the KakaoTalk Dock icon → Options → Assign To → All Desktops.
 >
 > **`notif-watch` is not subject to this** — it reads the macOS Notification Center DB rather than an AX window, so it works regardless of window state (but muted / focused chats post no notification and so aren't seen).
 

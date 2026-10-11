@@ -45,7 +45,8 @@ Agent-originated replies use a durable `SafeSendOutbox` instead of invoking AX
 directly. `propose` is local-only and idempotent when given a source-event key;
 `approve` is interactive-only and claims the immutable target/message before
 calling the AX adapter. The proposal code is followed by macOS device-owner
-authentication, and direct real `local-send` uses the same OS boundary.
+authentication, and direct real `local-send` uses the same OS boundary;
+`local-send-photo` shares it.
 Successful verification becomes `sent`. Adapter errors, process interruption,
 or an indeterminate completion after Return may have been pressed become
 `uncertain` and are never retried automatically. A failure proven to happen

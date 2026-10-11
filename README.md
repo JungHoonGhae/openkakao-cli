@@ -71,6 +71,8 @@ brew install openkakao-cli
 # 2. 메시지 보내기 — 서버 접촉 없음, 실제 카톡 UI를 직접 조작
 openkakao-cli local-send "채팅방 표시 이름" "Hello from CLI!" --dry-run   # 미리보기
 openkakao-cli local-send "채팅방 표시 이름" "Hello from CLI!" -y         # 실제 전송
+openkakao-cli local-send-photo "채팅방 표시 이름" ./family.jpg --dry-run  # 사진 미리보기
+openkakao-cli local-send-photo "채팅방 표시 이름" ./family.jpg -y        # 공식 앱으로 사진 전송
 
 # 3. 최근 메시지 읽기 — 같은 방식(AX)으로 화면에 보이는 메시지를 스크랩
 openkakao-cli ax-read "채팅방 표시 이름" -n 20
@@ -166,7 +168,7 @@ npx skills add JungHoonGhae/skills@openkakao-cli
 - `--dry-run`으로 실행 전 미리보기
 - `send --me`로 나와의 채팅에 바로 전송 (테스트용)
 - LOCO write 기본 비활성 — `safety.allow_loco_write = true`로 opt-in
-- `local-send`도 기본 비활성 — `safety.allow_ax_send = true` + `safety.allowed_send_chats` 화이트리스트로 opt-in
+- `local-send`/`local-send-photo`도 기본 비활성 — `safety.allow_ax_send = true` + `safety.allowed_send_chats` 화이트리스트로 opt-in
 - 에이전트 전송에는 `safe-send` 권장 — 제안은 로컬 Outbox에만 저장되고 실제 승인은 사람의 대화형 터미널과 macOS Touch ID/로그인 암호 인증을 모두 요구
 
 ## 이런 경우에 잘 맞습니다
@@ -187,7 +189,7 @@ v1.1.0부터 LOCO write 작업(send, delete, edit, react)은 **기본 비활성*
 allow_loco_write = true
 ```
 
-`local-send`(AX 기반 실전송)도 v1.4.0부터 기본 비활성이며, 별도로 opt-in과 **채팅방 화이트리스트**가 필요합니다. 로컬 DB의 chat-id로 대상을 다시 검증할 수 없으므로, 실전송은 화이트리스트뿐 아니라 채팅 목록의 유일한 exact-name 일치, 카카오톡 코드서명, 전송 직전 macOS 사용자 인증을 함께 요구합니다:
+`local-send`와 `local-send-photo`(AX 기반 실전송)도 기본 비활성입니다(`local-send`는 v1.4.0부터). 별도로 opt-in과 **채팅방 화이트리스트**가 필요합니다. 로컬 DB의 chat-id로 대상을 다시 검증할 수 없으므로, 실전송은 화이트리스트뿐 아니라 채팅 목록의 유일한 exact-name 일치, 카카오톡 코드서명, 전송 직전 macOS 사용자 인증을 함께 요구합니다(단, 아래에서 설명하는 명시적 무인 승인 하에서는 `local-send-photo`가 마지막 인증 단계를 건너뜁니다):
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -213,7 +215,7 @@ openkakao-cli safe-send approve <intent_id>
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드와 macOS device-owner 인증을 모두 통과해야 합니다. 직접 `local-send`로 실전송할 때도 같은 OS 인증이 필요합니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 Return 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, Return 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 채팅 목록에 같은 표시 이름이 둘 이상이면 거부합니다. 선택된 행과 입력값을 Return 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
+제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드와 macOS device-owner 인증을 모두 통과해야 합니다. 직접 `local-send`·`local-send-photo`로 실전송할 때도 같은 OS 인증이 필요합니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 Return 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, Return 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 채팅 목록에 같은 표시 이름이 둘 이상이면 거부합니다. 선택된 행과 입력값을 Return 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
 
 이 경로는 `openkakao-cli`가 macOS Accessibility/CoreGraphics를 직접 호출하는 네이티브 구현입니다. Orca나 에이전트의 `$computer-use` 스킬은 설치·실행에 필요하지 않으며, 범용 UI 클릭/키 입력 대신 `safe-send propose`와 사람의 승인 interface를 사용합니다.
 
@@ -230,11 +232,12 @@ openkakao-cli safe-send cancel <intent_id>
 | `chats --rest` | REST API 채팅 목록 | REST |
 | `read <id> --rest` | REST API 메시지 읽기 | REST |
 | `send ... --dry-run` | 전송 미리보기 | 없음 |
-| `local-send ... --dry-run` | AX 전송 미리보기 | 없음 |
+| `local-send ... --dry-run` | AX 텍스트 전송 미리보기 | 없음 |
+| `local-send-photo ... --dry-run` | AX 사진 전송 미리보기 | 없음 |
 | `safe-send propose/list` | 영속 전송 제안 생성·조회 (실제 전송 없음) | 없음 |
 
 > [!NOTE]
-> `local-send`/`ax-read`/`ax-watch`는 macOS Accessibility API로 카카오톡의 **메인 채팅 목록 창**을 찾아야 동작합니다. 이 창이 **최소화**돼 있거나 현재 보고 있는 것과 **다른 macOS Space(가상 데스크탑)**에 있으면 찾지 못합니다(포커스를 뺏지 않고는 자동 복구가 불가능해서, 명확한 에러만 내고 직접 복원을 요청합니다). 계속 겪는다면 Dock의 카카오톡 아이콘 우클릭 → Options → Assign To → All Desktops로 한 번만 설정해두세요.
+> `local-send`/`local-send-photo`/`ax-read`/`ax-watch`는 macOS Accessibility API로 카카오톡의 **메인 채팅 목록 창**을 찾아야 동작합니다. 이 창이 **최소화**돼 있거나 현재 보고 있는 것과 **다른 macOS Space(가상 데스크탑)**에 있으면 찾지 못합니다(포커스를 뺏지 않고는 자동 복구가 불가능해서, 명확한 에러만 내고 직접 복원을 요청합니다). 계속 겪는다면 Dock의 카카오톡 아이콘 우클릭 → Options → Assign To → All Desktops로 한 번만 설정해두세요.
 >
 > **`notif-watch`는 이 제약을 받지 않습니다** — AX 창이 아니라 macOS 알림 센터 DB를 읽으므로 창 상태와 무관하게 동작합니다(대신 음소거·포커스 중인 방은 알림이 안 떠 감지 못함).
 

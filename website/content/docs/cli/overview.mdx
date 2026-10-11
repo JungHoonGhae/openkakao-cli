@@ -85,6 +85,7 @@ Persistent policy can be stored in [Configuration](/docs/getting-started/configu
 | Command | Description |
 |---------|-------------|
 | `local-send <chat_name> <msg>` | Send a real message by driving the KakaoTalk UI directly (requires `allow_ax_send` + `allowed_send_chats`, supports `--dry-run`) |
+| `local-send-photo <chat_name> <file>` | Send one validated image (JPEG/PNG/GIF/WebP/HEIF, max 50 MiB) through the same AX path and KakaoTalk's native file picker (same config gates, supports `--dry-run`) |
 | `safe-send propose/list/approve/cancel` | Persist an AX send proposal for human review; approval requires an interactive terminal, the proposal code, and macOS device-owner authentication |
 | `ax-read <chat_name>` | Read the most recently visible messages in a chat via the same UI-scraping mechanism |
 | `ax-watch` | Poll the visible chat list for unread-count increases and dispatch hooks/webhooks |

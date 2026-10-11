@@ -92,7 +92,7 @@ allowed_send_chats = []
 | `safety.webhook_timeout_secs` | int | HTTP timeout for webhook delivery |
 | `safety.allow_insecure_webhooks` | bool | allow non-HTTPS webhooks outside localhost |
 | `safety.allow_loco_write` | bool | enable LOCO write operations (send, delete, edit, react) — disabled by default for account safety |
-| `safety.allow_ax_send` | bool | enable real AX sends through `local-send` or human-approved `safe-send` — disabled by default |
+| `safety.allow_ax_send` | bool | enable real AX sends through `local-send`/`local-send-photo` or human-approved `safe-send` — disabled by default |
 | `safety.allowed_send_chats` | string array | exact KakaoTalk display names that real AX sends may target; an empty list denies every target |
 
 ## High-Value Sections

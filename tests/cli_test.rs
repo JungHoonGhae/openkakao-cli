@@ -242,3 +242,121 @@ fn safe_send_propose_and_list_are_local_only() {
         .failure()
         .stderr(predicate::str::contains("no unattended bypass"));
 }
+
+fn write_png(path: &std::path::Path) {
+    // 1x1 RGBA PNG; only the magic bytes matter for validation, but keep it a
+    // real image so the fixture stays honest.
+    let png = [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89,
+    ];
+    std::fs::write(path, png).unwrap();
+}
+
+#[test]
+fn local_send_photo_dry_run_emits_json_with_canonicalized_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let photo = dir.path().join("vacation.png");
+    write_png(&photo);
+    let link = dir.path().join("latest-link.png");
+    std::os::unix::fs::symlink(&photo, &link).unwrap();
+
+    let output = cmd()
+        .env("HOME", dir.path())
+        .args([
+            "--json",
+            "local-send-photo",
+            "Kim Chiang",
+            link.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "dry-run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(parsed["dry_run"], serde_json::json!(true));
+    assert_eq!(parsed["action"], "local_send_photo");
+    assert_eq!(parsed["chat_name"], "Kim Chiang");
+    // The symlink must be reported as its canonical target, not the link path.
+    assert_eq!(
+        parsed["file"].as_str().unwrap(),
+        photo.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Would AX-send photo"),
+        "dry-run summary should go to stderr so stdout stays pure JSON"
+    );
+}
+
+#[test]
+fn local_send_photo_dry_run_rejects_spoofed_and_missing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let spoofed = dir.path().join("photo.jpg");
+    std::fs::write(&spoofed, b"just text wearing a .jpg extension").unwrap();
+
+    cmd()
+        .env("HOME", dir.path())
+        .args(["local-send-photo", "Kim Chiang"])
+        .arg(&spoofed)
+        .args(["--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unsupported or invalid photo data",
+        ));
+
+    let missing = dir.path().join("missing.png");
+    cmd()
+        .env("HOME", dir.path())
+        .args(["local-send-photo", "Kim Chiang"])
+        .arg(&missing)
+        .args(["--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("photo does not exist"));
+}
+
+#[test]
+fn local_send_photo_real_send_is_blocked_until_allowlisted_and_confirmed() {
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("openkakao");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[safety]\nallow_ax_send = true\nallowed_send_chats = [\"Family\"]\n",
+    )
+    .unwrap();
+    let photo = home.path().join("vacation.png");
+    write_png(&photo);
+
+    // Not allowlisted: refuse before any KakaoTalk interaction.
+    cmd()
+        .env("HOME", home.path())
+        .args(["local-send-photo", "Kim Chiang"])
+        .arg(&photo)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not in the local-send allowlist"));
+
+    // Allowlisted but declined at the confirmation prompt: cancel cleanly
+    // without ever reaching AX automation (safe on any runner OS).
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[safety]\nallow_ax_send = true\nallowed_send_chats = [\"Kim Chiang\"]\n",
+    )
+    .unwrap();
+    cmd()
+        .env("HOME", home.path())
+        .args(["local-send-photo", "Kim Chiang"])
+        .arg(&photo)
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cancelled."))
+        .stderr(predicate::str::contains("Direct AX photo send review"));
+}
