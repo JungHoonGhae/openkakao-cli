@@ -124,10 +124,10 @@ Run `doctor` to check if the local database is accessible:
 openkakao-cli doctor --json
 ```
 
-`doctor` reports the platform UUID, the recovered Kakao user ID, and the resolved database path. To recover the user ID it inspects the KakaoTalk preferences plist using several strategies in order, from cheapest to most expensive — the last is a bounded SHA-512 pre-image search that stops after a short time budget, so `doctor` never hangs even when the user ID cannot be recovered on a given KakaoTalk build.
+`doctor` reports the platform UUID, the recovered Kakao user ID, and the resolved database path. To recover the user ID it tries several strategies in order, from cheapest to most expensive: plist key lookups, then a locally saved user ID (from `login --save`) — trusted only when its SHA-512 exactly matches the plist's non-zero active-account marker, so stale or inactive credentials are rejected — and finally a bounded SHA-512 pre-image search that stops after a short time budget, so `doctor` never hangs even when the user ID cannot be recovered on a given KakaoTalk build.
 
 <Callout title="KakaoTalk 26.x">
-  Newer KakaoTalk macOS builds (26.x) stopped writing some of the plist keys earlier versions used. v1.2.3 adds compatible discovery paths for these builds. If `doctor` still cannot resolve the user ID or database path, set `OPENKAKAO_CLI_DEBUG=1` and re-run to see which strategy was attempted.
+  Newer KakaoTalk macOS builds (26.x) stopped writing some of the plist keys earlier versions used. v1.2.3 adds compatible discovery paths for these builds. KakaoTalk 26.7.0 additionally replaced the numeric `FSChatWindowFrame_` suffixes with opaque hashes, so on that build the user ID comes from the saved-credentials strategy above or the bounded SHA-512 search rather than the plist's numeric keys. If `doctor` still cannot resolve the user ID or database path, set `OPENKAKAO_CLI_DEBUG=1` and re-run to see which strategy was attempted.
 </Callout>
 
 The output includes a `Local DB (SQLCipher)` check that verifies UUID extraction, user ID, file existence, and decryption.

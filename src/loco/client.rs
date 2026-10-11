@@ -23,6 +23,69 @@ const BOOKING_HOST: &str = "booking-loco.kakao.com";
 const BOOKING_PORT: u16 = 443;
 const DEFAULT_LOCO_PORT: u16 = 5223;
 
+fn booking_request_body(credentials: &KakaoCredentials) -> Document {
+    doc! {
+        "MCCMNC": "99999",
+        "os": "mac",
+        // Retained as a Mac client-profile field. The Android request does not
+        // establish that it is safe to remove from the desktop profile.
+        "model": "",
+        "userId": credentials.user_id,
+    }
+}
+
+fn checkin_request_body(credentials: &KakaoCredentials) -> Document {
+    doc! {
+        "userId": credentials.user_id,
+        "os": "mac",
+        "ntype": 0_i32,
+        "appVer": &credentials.app_version,
+        "MCCMNC": "99999",
+        "lang": "ko",
+        // These are retained desktop/sub-device profile fields. Their absence
+        // from Android is not evidence that the Mac LOCO profile should omit them.
+        "countryISO": "KR",
+        "useSub": true,
+    }
+}
+
+fn loginlist_request_body(
+    credentials: &KakaoCredentials,
+    sync_chat_ids: &[(i64, i64)],
+) -> Document {
+    let chat_ids = sync_chat_ids
+        .iter()
+        .map(|(chat_id, _)| bson::Bson::Int64(*chat_id))
+        .collect::<Vec<_>>();
+    let max_ids = sync_chat_ids
+        .iter()
+        .map(|(_, max_id)| bson::Bson::Int64(*max_id))
+        .collect::<Vec<_>>();
+
+    doc! {
+        "appVer": &credentials.app_version,
+        "prtVer": "1",
+        "os": "mac",
+        "lang": "ko",
+        "duuid": &credentials.device_uuid,
+        "oauthToken": &credentials.oauth_token,
+        // Retained as a Mac client-profile field; current Android omits it.
+        "dtype": 2_i32,
+        "ntype": 0_i32,
+        "MCCMNC": "99999",
+        "revision": 0_i32,
+        "chatIds": bson::Bson::Array(chat_ids),
+        "maxIds": bson::Bson::Array(max_ids),
+        "lastTokenId": 0_i64,
+        "lbk": 0_i32,
+        "rp": bson::Bson::Binary(bson::Binary {
+            subtype: bson::spec::BinarySubtype::Generic,
+            bytes: vec![0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00],
+        }),
+        "bg": false,
+    }
+}
+
 enum LocoStream {
     Tls(Box<TlsStream<TcpStream>>),
     Legacy {
@@ -245,14 +308,7 @@ impl LocoClient {
     /// Phase 1: Booking — get configuration and checkin server info.
     pub async fn booking(&self) -> Result<Document> {
         let builder = PacketBuilder::new();
-        let pkt = builder.build(
-            "GETCONF",
-            doc! {
-                "MCCMNC": "99999",
-                "os": "mac",
-                "model": "",
-            },
-        );
+        let pkt = builder.build("GETCONF", booking_request_body(&self.credentials));
         eprintln!(
             "[booking] Connecting to {}:{}...",
             BOOKING_HOST, BOOKING_PORT
@@ -266,19 +322,7 @@ impl LocoClient {
     /// Phase 2: Checkin — get assigned LOCO chat server.
     pub async fn checkin(&self, checkin_host: &str, checkin_port: u16) -> Result<(Document, bool)> {
         let builder = PacketBuilder::new();
-        let pkt = builder.build(
-            "CHECKIN",
-            doc! {
-                "userId": self.credentials.user_id,
-                "os": "mac",
-                "ntype": 0_i32,
-                "appVer": &self.credentials.app_version,
-                "MCCMNC": "99999",
-                "lang": "ko",
-                "countryISO": "KR",
-                "useSub": true,
-            },
-        );
+        let pkt = builder.build("CHECKIN", checkin_request_body(&self.credentials));
 
         // Try TLS first on 443, then checkin_port TLS, then legacy, then fallback 995
         let mut attempts: Vec<(bool, u16)> =
@@ -484,43 +528,7 @@ impl LocoClient {
     /// When `sync_chat_ids` is set, includes those chatIds/maxIds so the server
     /// returns chatLog data with recent messages for those chats.
     pub async fn login(&mut self) -> Result<Document> {
-        let (chat_ids_bson, max_ids_bson) = if self.sync_chat_ids.is_empty() {
-            (bson::Bson::Array(vec![]), bson::Bson::Array(vec![]))
-        } else {
-            let cids: Vec<bson::Bson> = self
-                .sync_chat_ids
-                .iter()
-                .map(|(cid, _)| bson::Bson::Int64(*cid))
-                .collect();
-            let mids: Vec<bson::Bson> = self
-                .sync_chat_ids
-                .iter()
-                .map(|(_, mid)| bson::Bson::Int64(*mid))
-                .collect();
-            (bson::Bson::Array(cids), bson::Bson::Array(mids))
-        };
-
-        let login_body = doc! {
-            "appVer": &self.credentials.app_version,
-            "prtVer": "1",
-            "os": "mac",
-            "lang": "ko",
-            "duuid": &self.credentials.device_uuid,
-            "oauthToken": &self.credentials.oauth_token,
-            "dtype": 2_i32,
-            "ntype": 0_i32,
-            "MCCMNC": "99999",
-            "revision": 0_i32,
-            "chatIds": chat_ids_bson,
-            "maxIds": max_ids_bson,
-            "lastTokenId": 0_i64,
-            "lbk": 0_i32,
-            "rp": bson::Bson::Binary(bson::Binary {
-                subtype: bson::spec::BinarySubtype::Generic,
-                bytes: vec![0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00],
-            }),
-            "bg": false,
-        };
+        let login_body = loginlist_request_body(&self.credentials, &self.sync_chat_ids);
 
         if std::env::var("OPENKAKAO_CLI_DEBUG").is_ok()
             || std::env::var("OPENKAKAO_RS_DEBUG").is_ok()
@@ -764,4 +772,86 @@ pub async fn loco_upload(
 
     eprintln!("[upload] Complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials() -> KakaoCredentials {
+        KakaoCredentials::new(
+            "test-oauth-token".to_string(),
+            42_i64,
+            "test-device-uuid".to_string(),
+            "26.6.1".to_string(),
+            "KT/26.6.1 Mac/26.0".to_string(),
+            "mac/26.6.1/ko".to_string(),
+        )
+    }
+
+    #[test]
+    fn booking_body_adds_mac_confirmed_user_id_and_retains_compatibility_fields() {
+        let body = booking_request_body(&credentials());
+
+        assert_eq!(body.len(), 4);
+        assert_eq!(body.get_str("MCCMNC"), Ok("99999"));
+        assert_eq!(body.get_str("os"), Ok("mac"));
+        assert_eq!(body.get_i64("userId"), Ok(42));
+        assert_eq!(body.get_str("model"), Ok(""));
+    }
+
+    #[test]
+    fn checkin_body_preserves_desktop_subdevice_profile() {
+        let body = checkin_request_body(&credentials());
+
+        assert_eq!(body.len(), 8);
+        assert_eq!(body.get_i64("userId"), Ok(42));
+        assert_eq!(body.get_str("os"), Ok("mac"));
+        assert_eq!(body.get_i32("ntype"), Ok(0));
+        assert_eq!(body.get_str("appVer"), Ok("26.6.1"));
+        assert_eq!(body.get_str("MCCMNC"), Ok("99999"));
+        assert_eq!(body.get_str("lang"), Ok("ko"));
+        assert_eq!(body.get_str("countryISO"), Ok("KR"));
+        assert_eq!(body.get_bool("useSub"), Ok(true));
+    }
+
+    #[test]
+    fn loginlist_body_preserves_current_profile_and_sync_pairs() {
+        let body = loginlist_request_body(&credentials(), &[(100, 900), (200, 0)]);
+
+        assert_eq!(body.len(), 16);
+        assert_eq!(body.get_str("appVer"), Ok("26.6.1"));
+        assert_eq!(body.get_str("prtVer"), Ok("1"));
+        assert_eq!(body.get_str("os"), Ok("mac"));
+        assert_eq!(body.get_str("lang"), Ok("ko"));
+        assert_eq!(body.get_str("duuid"), Ok("test-device-uuid"));
+        assert_eq!(body.get_str("oauthToken"), Ok("test-oauth-token"));
+        assert_eq!(body.get_i32("dtype"), Ok(2));
+        assert_eq!(body.get_i32("ntype"), Ok(0));
+        assert_eq!(body.get_str("MCCMNC"), Ok("99999"));
+        assert_eq!(body.get_i32("revision"), Ok(0));
+        assert_eq!(body.get_i64("lastTokenId"), Ok(0));
+        assert_eq!(body.get_i32("lbk"), Ok(0));
+        assert_eq!(body.get_bool("bg"), Ok(false));
+        assert!(!body.contains_key("isSw"));
+        assert_eq!(
+            body.get_array("chatIds"),
+            Ok(&vec![bson::Bson::Int64(100), bson::Bson::Int64(200)])
+        );
+        assert_eq!(
+            body.get_array("maxIds"),
+            Ok(&vec![bson::Bson::Int64(900), bson::Bson::Int64(0)])
+        );
+
+        let rp = body.get_binary_generic("rp").expect("rp binary field");
+        assert_eq!(rp, &[0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn loginlist_body_uses_empty_sync_arrays_by_default() {
+        let body = loginlist_request_body(&credentials(), &[]);
+
+        assert_eq!(body.get_array("chatIds"), Ok(&vec![]));
+        assert_eq!(body.get_array("maxIds"), Ok(&vec![]));
+    }
 }

@@ -59,7 +59,7 @@ default_max_reconnect = 10
 [auth]
 prefer_relogin = true
 auto_renew = true
-password_cmd = "doppler secrets get KAKAO_PASSWORD -p openkakao -c dev --plain"
+password_cmd = "doppler secrets get KAKAO_PASSWORD -p oss-01 -c openkakao_dev --plain"
 
 [safety]
 min_unattended_send_interval_secs = 10
@@ -158,7 +158,7 @@ Use this only when you have reason to believe refresh-token renewal is currently
 [auth]
 prefer_relogin = true
 auto_renew = true
-password_cmd = "doppler secrets get KAKAO_PASSWORD -p openkakao -c dev --plain"
+password_cmd = "doppler secrets get KAKAO_PASSWORD -p oss-01 -c openkakao_dev --plain"
 ```
 
 Use this when you want unattended relogin without storing the Kakao password in `config.toml` or `credentials.json`.

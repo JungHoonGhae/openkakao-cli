@@ -263,12 +263,9 @@ const DEVICE_NOT_REGISTERED: i64 = -100;
 /// `A`/`User-Agent` headers, so using it keeps `login --manual` working across
 /// KakaoTalk updates without a hardcoded version that the server later rejects.
 fn installed_kakaotalk_version() -> Option<String> {
-    let plist_path = std::path::Path::new("/Applications/KakaoTalk.app/Contents/Info.plist");
-    let dict = plist::from_file::<_, plist::Dictionary>(plist_path).ok()?;
-    dict.get("CFBundleShortVersionString")
-        .and_then(|v| v.as_string())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
+    openkakao_cli::kakaotalk_app::installed_app()
+        .map(|app| app.version)
+        .filter(|version| !version.trim().is_empty() && version != "unknown")
 }
 
 /// Resolve the app version string for `login --manual`, in priority order:

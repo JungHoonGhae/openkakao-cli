@@ -1,26 +1,12 @@
 name: openkakao-cli CI
 
 on:
+  # Required checks must be created for every PR. Path filters can leave a
+  # protected branch waiting forever when a PR only changes docs or workflows.
   push:
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "native/**"
-      - "build.rs"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/openkakao-cli-ci.yml"
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    paths:
-      - "src/**"
-      - "tests/**"
-      - "native/**"
-      - "build.rs"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/openkakao-cli-ci.yml"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -31,10 +17,18 @@ env:
   MANIFEST: Cargo.toml
 
 jobs:
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -42,7 +36,7 @@ jobs:
           rustflags: ""
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -52,12 +46,12 @@ jobs:
           restore-keys: cargo-test-${{ runner.os }}-
 
       - name: Cargo test
-        run: cargo test --manifest-path $MANIFEST
+        run: cargo test --manifest-path "$MANIFEST"
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -65,7 +59,7 @@ jobs:
           rustflags: ""
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -75,15 +69,15 @@ jobs:
           restore-keys: cargo-lint-${{ runner.os }}-
 
       - name: Cargo fmt
-        run: cargo fmt --manifest-path $MANIFEST --check
+        run: cargo fmt --manifest-path "$MANIFEST" --check
 
       - name: Cargo clippy
-        run: cargo clippy --manifest-path $MANIFEST -- -D warnings
+        run: cargo clippy --manifest-path "$MANIFEST" -- -D warnings
 
   build-macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -91,7 +85,7 @@ jobs:
           rustflags: ""
 
       - name: Cache cargo registry and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -101,7 +95,23 @@ jobs:
           restore-keys: cargo-macos-${{ runner.os }}-
 
       - name: Build release
-        run: cargo build --release --manifest-path $MANIFEST
+        run: cargo build --release --manifest-path "$MANIFEST"
 
       - name: Smoke test
         run: ./target/release/openkakao-cli --version
+
+  required:
+    name: required
+    if: ${{ always() }}
+    needs: [workflow-lint, test, lint, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if ! jq -e 'all(.[]; .result == "success")' <<<"$NEEDS_JSON"; then
+            echo "One or more required CI jobs did not pass."
+            jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS_JSON"
+            exit 1
+          fi

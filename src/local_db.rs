@@ -73,7 +73,8 @@ fn get_user_id_from_plist() -> Result<i64> {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("com.kakao.KakaoTalkMac.") && name.ends_with(".plist") {
-                    if let Ok(user_id) = extract_user_id_from_plist(&entry.path()) {
+                    let path = entry.path();
+                    if let Ok(user_id) = extract_user_id_from_plist(&path) {
                         return Ok(user_id);
                     }
                 }
@@ -93,6 +94,11 @@ fn get_user_id_from_plist() -> Result<i64> {
         "Could not extract KakaoTalk user ID from preferences. \
          Is KakaoTalk installed and logged in?"
     )
+}
+
+fn dict_has_active_user_id(dict: &plist::Dictionary, user_id: i64) -> bool {
+    let expected = hex::encode(sha2::Sha512::digest(user_id.to_string().as_bytes()));
+    extract_active_account_hash(dict).as_deref() == Some(expected.as_str())
 }
 
 fn extract_user_id_from_plist(path: &std::path::Path) -> Result<i64> {
@@ -145,7 +151,17 @@ fn extract_user_id_from_plist(path: &std::path::Path) -> Result<i64> {
         return Ok(id);
     }
 
-    // Strategy D: SHA-512 brute-force from revision key suffixes (last resort).
+    // Strategy D: KakaoTalk 26.7 uses opaque FSChatWindowFrame_* suffixes.
+    // Reuse a previously saved user ID only when it hashes to this plist's
+    // active-account marker. Run this before brute force so larger IDs do not
+    // exhaust the bounded search first.
+    if let Ok(Some(credentials)) = crate::credentials::load_credentials() {
+        if credentials.user_id > 0 && dict_has_active_user_id(&dict, credentials.user_id) {
+            return Ok(credentials.user_id);
+        }
+    }
+
+    // Strategy E: SHA-512 brute-force from revision key suffixes (last resort).
     // Bounded by a wall-clock deadline so a missing/foreign hash cannot hang the CLI.
     if let Some(hash) = extract_active_account_hash(&dict) {
         if let Some(id) = recover_user_id_from_sha512(&hash) {
@@ -725,5 +741,32 @@ mod tests {
     #[test]
     fn sha512_recovery_rejects_malformed_hash() {
         assert_eq!(recover_user_id_from_sha512("not-a-hash"), None);
+    }
+
+    #[test]
+    fn saved_user_id_must_match_active_account_hash() {
+        let user_id = 199453377;
+        let hash = hex::encode(sha2::Sha512::digest(user_id.to_string().as_bytes()));
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            format!("DESIGNATEDFRIENDSREVISION:{hash}"),
+            plist::Value::Integer(1.into()),
+        );
+
+        assert!(dict_has_active_user_id(&dict, user_id));
+        assert!(!dict_has_active_user_id(&dict, user_id + 1));
+    }
+
+    #[test]
+    fn saved_user_id_rejects_inactive_account_hash() {
+        let user_id = 199453377;
+        let hash = hex::encode(sha2::Sha512::digest(user_id.to_string().as_bytes()));
+        let mut dict = plist::Dictionary::new();
+        dict.insert(
+            format!("DESIGNATEDFRIENDSREVISION:{hash}"),
+            plist::Value::Integer(0.into()),
+        );
+
+        assert!(!dict_has_active_user_id(&dict, user_id));
     }
 }

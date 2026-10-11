@@ -86,6 +86,12 @@ All known working LOCO implementations (loco-wrapper, node-kakao, KiwiTalk) use 
 
 ### Specific field differences (loco-wrapper vs ours)
 
+The current Android 26.7.1 app was also checked directly on 2026-09-02. See the
+[signed APK static-analysis note](research/android-apk-26.7.1.md). That pass
+confirmed `prtVer` and `rp`. A signed Mac 26.7.0 binary cross-check confirmed
+`GETCONF.userId`; `LOGINLIST.isSw` was not observed in the Mac initializer and
+remains absent from the current Mac profile.
+
 ```
 loco-wrapper LOGINLIST:                 Ours (current):
   os: "android"                           os: "mac"           <-- DIFFERS (but not root cause)
@@ -94,6 +100,7 @@ loco-wrapper LOGINLIST:                 Ours (current):
   pcst: (not sent)                        pcst: (not sent)    OK (removed)
   rp: [6 bytes]                           rp: [6 bytes]       OK (added)
   lbk: 0                                  lbk: 0              OK
+  isSw: false                             (not sent)          Not observed in Mac initializer
   token: from login.json response         token: from Cache.db <-- ROOT CAUSE
 ```
 

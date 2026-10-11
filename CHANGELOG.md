@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`local-send-photo <chat_name> <file>`** — send one image through the official signed KakaoTalk app via Accessibility, with no server/LOCO login. The image is validated by content (JPEG/PNG/GIF/WebP/HEIF magic bytes, 1 byte–50 MiB, regular file) and the path canonicalized and required to be valid UTF-8 before anything is driven. The native file picker is driven primarily through semantic AX controls (the unique Send Files ⌘O button, Go to Folder path entry, selected-filename read-back), with focus-verified coordinate fallbacks; pressing Open only advances the picker to KakaoTalk's own attachment preview, and after macOS device-owner authentication the recipient chat window and previewed filename are revalidated immediately before the final Send press, with delivery confirmed only by one additional outgoing `[사진]` bubble. It shares `local-send`'s `allow_ax_send` + exact `allowed_send_chats` gates (skipped for `--dry-run`), refuses to disturb an existing composer draft, and reports any ambiguous post-commit outcome as `uncertain` so callers never retry blindly.
 
+## [1.8.3] - 2026-10-11
+
+### Fixed
+- `local-send` and `ax-read` can open chats again on KakaoTalk builds whose chat-list rows expose no `AXPress`/`AXConfirm` action (cells only offer `AXShowMenu`), which previously failed with "exposes no safe element-scoped open action". The fallback raises KakaoTalk, requires a system-wide hit test to prove the exact row is the topmost element at its center, double-clicks it through the HID tap (KakaoTalk ignores pid-posted mouse events), and restores the cursor. A process-wide Return is still never used to open a row. The main window is also raised first so the chat-list table can take focus while a chat window is already open. ([#62](https://github.com/JungHoonGhae/openkakao-cli/pull/62), thanks [@zinoopark](https://github.com/zinoopark)).
+
+## [1.8.2] - 2026-09-20
+
+### Fixed
+- `ax-read` allows up to 30 seconds for a bounded Accessibility snapshot on larger or slower KakaoTalk chat lists and reports the snapshot size and limits when it still cannot finish. This addresses the five-second failure reported in [#58](https://github.com/JungHoonGhae/openkakao-cli/issues/58).
+- `doctor` and the installed-app version lookup recognize both `KakaoTalk.app` and `카카오톡.app` in system or user Applications folders, checking the bundle identifier before accepting an installation.
+- LOCO `watch` decodes nested `MSG.chatLog` and batched `SYNCMSG.chatLogs`, displays the current `message` field while retaining legacy `msg` support, and prevents older received logs from moving resume cursors backward.
+
+### Changed
+- Configuration examples use the current Doppler project and config names.
+- GitHub releases now keep the curated changelog section and append GitHub-generated PR attribution and first-time-contributor notes, so contributors receive the platform's standard release credit.
+
+## [1.8.1] - 2026-09-03
+
+### Added
+- Published a reproducible KakaoTalk Android 26.7.1 LOCO static-analysis note with signed-artifact hashes, transport and request-schema findings, a signed Mac 26.7.0 cross-check, and explicit boundaries against Android identity or authentication changes.
+
+### Fixed
+- KakaoTalk 26.7.0 replaced the numeric `FSChatWindowFrame_` preference suffixes with opaque hashes, so userId recovery on that build fell through to the bounded SHA-512 brute force. A locally saved user ID (from `login --save`) is now reused — before the brute force, so large IDs no longer risk exhausting the search budget — but only when its SHA-512 exactly matches the plist's non-zero active-account marker; stale or inactive credentials are rejected and the existing direct-key and brute-force fallbacks are unchanged. This does not fix the separately broken SQLCipher key derivation on recent builds. ([#51](https://github.com/JungHoonGhae/openkakao-cli/pull/51), thanks [@e-jung](https://github.com/e-jung)).
+- LOCO `GETCONF` now includes the signed Android- and Mac-observed `userId` field while preserving the existing Mac request profile. Android-observed fields without Mac serialization evidence remain excluded.
+- The Korean and English READMEs no longer embed the third-party Star History chart that GitHub currently replaces with a restricted-access error image.
+
 ## [1.8.0] - 2026-09-02
 
 ### Changed

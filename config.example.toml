@@ -27,10 +27,10 @@
 # auto_renew = true
 
 # Shell command to retrieve current KakaoTalk password
-# password_cmd = "doppler secrets get KAKAO_PASSWORD -p openkakao -c dev --plain"
+# password_cmd = "doppler secrets get KAKAO_PASSWORD -p oss-01 -c openkakao_dev --plain"
 
 # Shell command to retrieve KakaoTalk login email (enables Cache.db-free relogin)
-# email_cmd = "doppler secrets get KAKAO_EMAIL -p openkakao -c dev --plain"
+# email_cmd = "doppler secrets get KAKAO_EMAIL -p oss-01 -c openkakao_dev --plain"
 
 [safety]
 # Minimum seconds between unattended sends (default: 10)

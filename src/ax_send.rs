@@ -310,17 +310,17 @@ mod imp {
     use accessibility_sys::kAXPressAction;
     use accessibility_sys::{
         kAXValueTypeCGPoint, kAXValueTypeCGSize, AXIsProcessTrusted,
-        AXUIElementCopyMultipleAttributeValues, AXUIElementRef, AXValueGetTypeID, AXValueGetValue,
-        AXValueRef,
+        AXUIElementCopyElementAtPosition, AXUIElementCopyMultipleAttributeValues,
+        AXUIElementCreateSystemWide, AXUIElementRef, AXValueGetTypeID, AXValueGetValue, AXValueRef,
     };
     use anyhow::{anyhow, Context, Result};
     use core_foundation::array::{CFArray, CFArrayRef};
     use core_foundation::base::{CFEqual, CFType, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::string::CFString;
-    use core_graphics::event::CGEvent;
+    use core_graphics::display::CGDisplay;
     use core_graphics::event::{
-        CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField, KeyCode,
+        CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField, KeyCode,
     };
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use core_graphics::geometry::{CGPoint, CGSize};
@@ -341,7 +341,9 @@ mod imp {
     const COMPOSER_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(50);
     const SNAPSHOT_MAX_DEPTH: usize = 128;
     const SNAPSHOT_MAX_NODES: usize = 20_000;
-    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(5);
+    // A large chat list can exceed five seconds on newer KakaoTalk/macOS builds.
+    // Keep a firm deadline while allowing the normal AX walk to finish.
+    const SNAPSHOT_MAX_DURATION: Duration = Duration::from_secs(30);
     const AX_MESSAGE_TIMEOUT_SECS: f32 = 1.0;
 
     struct DisplayWakeGuard {
@@ -529,30 +531,6 @@ mod imp {
         }
     }
 
-    /// HID events are delivered at global screen coordinates, so a
-    /// coordinate-based click on a row is only safe while KakaoTalk is the
-    /// frontmost application and its main chat-list window — the window whose
-    /// row coordinates were read — is the focused window. Unlike
-    /// `focus_window_and_verify`, this never raises or activates anything:
-    /// when the check fails, the caller refuses to click rather than deliver
-    /// the click to whatever unrelated window actually covers that point.
-    fn verify_main_window_frontmost(app: &AXUIElement, main_window: &AXUIElement) -> Result<()> {
-        let frontmost = attr_as_bool(app, "AXFrontmost") == Some(true);
-        let focused_is_main =
-            attr_as_element(app, "AXFocusedWindow").is_some_and(|focused| unsafe {
-                CFEqual(focused.as_CFTypeRef(), main_window.as_CFTypeRef()) != 0
-            });
-        if !frontmost || !focused_is_main {
-            anyhow::bail!(
-                "KakaoTalk is not the frontmost app with its main chat-list window focused, so a \
-                 coordinate-based chat-row click could land in another window. Bring KakaoTalk's \
-                 main window to the front yourself (this check never raises windows itself) or \
-                 open the chat by hand, then retry."
-            );
-        }
-        Ok(())
-    }
-
     /// Find KakaoTalk's main chat-list window, as opposed to any individual
     /// open-chat windows (which are separate `AXWindow`s titled with the
     /// other party's — or your own, for the self chat — display name).
@@ -649,7 +627,12 @@ mod imp {
         let node = snapshot_bounded(root, 0, &mut budget);
         if budget.exhausted {
             anyhow::bail!(
-                "KakaoTalk AX snapshot exceeded its depth/node/time safety budget; refusing incomplete UI data"
+                "KakaoTalk AX snapshot exceeded its safety budget ({} nodes in {:.1}s; limits: depth {}, nodes {}, time {}s); refusing incomplete UI data. Close extra KakaoTalk windows or reduce the visible chat list and retry",
+                budget.nodes,
+                budget.started_at.elapsed().as_secs_f64(),
+                SNAPSHOT_MAX_DEPTH,
+                SNAPSHOT_MAX_NODES,
+                SNAPSHOT_MAX_DURATION.as_secs()
             );
         }
         Ok(node)
@@ -852,6 +835,119 @@ mod imp {
         Ok(())
     }
 
+    fn attr_as_frame(el: &AXUIElement) -> Option<(CGPoint, CGSize)> {
+        let value_of = |name: &str, kind, out: *mut std::ffi::c_void| -> bool {
+            let attr: AXAttribute<CFType> = AXAttribute::new(&CFString::new(name));
+            let Ok(value) = el.attribute(&attr) else {
+                return false;
+            };
+            value.type_of() == unsafe { AXValueGetTypeID() }
+                && unsafe { AXValueGetValue(value.as_CFTypeRef() as AXValueRef, kind, out) }
+        };
+        let mut point = CGPoint::new(0.0, 0.0);
+        let mut size = CGSize::new(0.0, 0.0);
+        if value_of(
+            "AXPosition",
+            kAXValueTypeCGPoint,
+            (&mut point as *mut CGPoint).cast(),
+        ) && value_of(
+            "AXSize",
+            kAXValueTypeCGSize,
+            (&mut size as *mut CGSize).cast(),
+        ) {
+            Some((point, size))
+        } else {
+            None
+        }
+    }
+
+    /// True if the topmost on-screen AX element at `point` is `target` or one
+    /// of its descendants. Uses the system-wide element so another app's window
+    /// covering the row fails the check.
+    fn hit_test_is_within(point: CGPoint, target: &AXUIElement) -> bool {
+        let system = unsafe { AXUIElement::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        let mut hit_ref: AXUIElementRef = std::ptr::null_mut();
+        let err = unsafe {
+            AXUIElementCopyElementAtPosition(
+                system.as_concrete_TypeRef(),
+                point.x as f32,
+                point.y as f32,
+                &mut hit_ref,
+            )
+        };
+        if err != 0 || hit_ref.is_null() {
+            return false;
+        }
+        let mut current = unsafe { AXUIElement::wrap_under_create_rule(hit_ref) };
+        for _ in 0..8 {
+            if unsafe { CFEqual(current.as_CFTypeRef(), target.as_CFTypeRef()) != 0 } {
+                return true;
+            }
+            match current.parent() {
+                Ok(parent) => current = parent,
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
+    fn post_mouse_to_hid(kind: CGEventType, point: CGPoint, clicks: i64) -> Result<()> {
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+            .map_err(|_| anyhow!("failed to create CGEventSource"))?;
+        let event = CGEvent::new_mouse_event(source, kind, point, CGMouseButton::Left)
+            .map_err(|_| anyhow!("failed to create mouse CGEvent"))?;
+        event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+
+    fn cursor_location() -> Option<CGPoint> {
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+        CGEvent::new(source).ok().map(|event| event.location())
+    }
+
+    /// Open a chat row that exposes no AX open action by double-clicking its
+    /// center. KakaoTalk ignores mouse events posted to its pid, so the click
+    /// goes through the HID tap — which is why the app is raised first and a
+    /// system-wide hit test must prove the exact row is the topmost element at
+    /// that point immediately before clicking. The cursor is restored after.
+    fn double_click_verified_row(app: &AXUIElement, row: &AXUIElement) -> Result<()> {
+        let frontmost: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXFrontmost"));
+        app.set_attribute(&frontmost, CFBoolean::true_value().as_CFType())
+            .map_err(|error| anyhow!("could not bring KakaoTalk to the front: {error:?}"))?;
+        let deadline = Instant::now() + COMPOSER_VERIFY_TIMEOUT;
+        while attr_as_bool(app, "AXFrontmost") != Some(true) {
+            if Instant::now() >= deadline {
+                anyhow::bail!("KakaoTalk did not become frontmost");
+            }
+            sleep(COMPOSER_VERIFY_POLL_INTERVAL);
+        }
+
+        let (origin, size) =
+            attr_as_frame(row).ok_or_else(|| anyhow!("chat row has no readable frame"))?;
+        if size.width < 1.0 || size.height < 1.0 {
+            anyhow::bail!("chat row has an empty frame");
+        }
+        let center = CGPoint::new(origin.x + size.width / 2.0, origin.y + size.height / 2.0);
+        if !hit_test_is_within(center, row) {
+            anyhow::bail!(
+                "chat row is off-screen or covered at its center; scroll it into view and retry"
+            );
+        }
+
+        let restore = cursor_location();
+        let clicked = (1..=2).try_for_each(|clicks| {
+            post_mouse_to_hid(CGEventType::LeftMouseDown, center, clicks)?;
+            post_mouse_to_hid(CGEventType::LeftMouseUp, center, clicks)?;
+            sleep(Duration::from_millis(30));
+            Ok::<_, anyhow::Error>(())
+        });
+        if let Some(point) = restore {
+            let _ = CGDisplay::warp_mouse_cursor_position(point);
+        }
+        clicked
+    }
+
     fn press_return(pid: i32) -> Result<()> {
         post_key_to_pid(pid, RETURN_KEYCODE, true)?;
         post_key_to_pid(pid, RETURN_KEYCODE, false)?;
@@ -971,22 +1067,6 @@ function run(argv) {
         Ok(())
     }
 
-    fn double_click(point: CGPoint) -> Result<()> {
-        for click_state in [1_i64, 2_i64] {
-            for event_type in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
-                let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-                    .map_err(|_| anyhow!("failed to create CGEventSource"))?;
-                let event =
-                    CGEvent::new_mouse_event(source, event_type, point, CGMouseButton::Left)
-                        .map_err(|_| anyhow!("failed to create mouse CGEvent"))?;
-                event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_state);
-                event.post(CGEventTapLocation::HID);
-            }
-            sleep(Duration::from_millis(80));
-        }
-        Ok(())
-    }
-
     #[allow(dead_code)] // Retained for the legacy native-picker path.
     fn single_click(point: CGPoint) -> Result<()> {
         for event_type in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
@@ -1035,6 +1115,9 @@ function run(argv) {
         let start = Instant::now();
 
         let main_window = find_main_window(app)?;
+        // An already-open chat window keeps key focus, so the chat-list table
+        // can't take AX focus below until the main window is raised.
+        let _ = main_window.perform_action(&CFString::new("AXRaise"));
         let snap = ensure_chatrooms_tab(&main_window)?;
         if debug {
             eprintln!(
@@ -1217,21 +1300,16 @@ end run
                 anyhow!("failed to confirm the exact selected chat row: {error:?}")
             })?;
         } else {
-            // KakaoTalk 26.7 exposes no element-scoped action for some chat
-            // rows. A bounded double-click at the exact selected row is safer
-            // than a process-wide Return: it targets the verified row itself,
-            // and the caller still requires the resulting exact-title window
-            // and readable composer before it can continue.
-            verify_main_window_frontmost(app, &main_window)?;
-            let point = row
-                .position_x
-                .zip(row.position_y)
-                .zip(row.width.zip(row.height))
-                .map(|((x, y), (width, height))| CGPoint::new(x + width / 2.0, y + height / 2.0))
-                .ok_or_else(|| {
-                    anyhow!("exact selected chat row has no bounded AX frame; refusing click")
-                })?;
-            double_click(point)?;
+            // KakaoTalk 25.9+ exposes no AXPress/AXConfirm on chat rows or the
+            // table (cells only offer AXShowMenu). Fall back to a double click
+            // on the row, but only after a system-wide hit test proves the
+            // exact row is what's actually on screen at that point — still no
+            // process-wide Return.
+            double_click_verified_row(app, &row.element).map_err(|error| {
+                anyhow!(
+                    "the exact selected KakaoTalk chat row exposes no element-scoped open action, and the hit-tested double-click fallback failed: {error}"
+                )
+            })?;
         }
 
         if debug {

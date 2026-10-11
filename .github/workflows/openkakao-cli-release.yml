@@ -17,7 +17,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -38,7 +38,7 @@ jobs:
     env:
       TARGET: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -61,7 +61,7 @@ jobs:
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: openkakao-cli-${{ env.TARGET }}
           path: |
@@ -73,7 +73,7 @@ jobs:
     env:
       TARGET: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -96,7 +96,7 @@ jobs:
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: openkakao-cli-${{ env.TARGET }}
           path: |
@@ -107,16 +107,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify, build-aarch64, build-x86_64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
       - name: Extract changelog section
-        id: changelog
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -127,18 +126,16 @@ jobs:
             /^## \[/ { if (f) exit }
             f
           ' CHANGELOG.md > release-notes.md
-          if [ -s release-notes.md ]; then
-            echo "generate=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "No changelog section for ${VERSION}; falling back to generated notes."
-            echo "generate=true" >> "$GITHUB_OUTPUT"
+          if [ ! -s release-notes.md ]; then
+            echo "No changelog section for ${VERSION}; publishing generated notes only."
           fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md
-          generate_release_notes: ${{ steps.changelog.outputs.generate }}
+          # Keep curated notes while letting GitHub add PR authors and first-time contributors.
+          generate_release_notes: true
           files: |
             dist/openkakao-cli-aarch64-apple-darwin.tar.gz
             dist/openkakao-cli-aarch64-apple-darwin.tar.gz.sha256
@@ -167,7 +164,7 @@ jobs:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -178,12 +175,14 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ARM_SHA=$(awk '{print $1}' dist/openkakao-cli-aarch64-apple-darwin.tar.gz.sha256)
           X86_SHA=$(awk '{print $1}' dist/openkakao-cli-x86_64-apple-darwin.tar.gz.sha256)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "arm_sha=$ARM_SHA" >> "$GITHUB_OUTPUT"
-          echo "x86_sha=$X86_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "arm_sha=$ARM_SHA"
+            echo "x86_sha=$X86_SHA"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: JungHoonGhae/homebrew-openkakao
           token: ${{ steps.doppler.outputs.HOMEBREW_TAP_TOKEN }}

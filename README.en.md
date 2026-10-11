@@ -48,16 +48,6 @@
 </div>
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=JungHoonGhae%2Fopenkakao&type=date&legend=top-left">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&theme=dark&legend=top-left" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&legend=top-left" />
-      <img alt="Star History Chart" src="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&legend=top-left" width="600" />
-    </picture>
-  </a>
-</p>
-
-<p align="center">
   <img src="assets/thumbnail-en.png" alt="openkakao" width="720" />
 </p>
 
@@ -286,6 +276,7 @@ cargo install --path .
 - LLM / agent workflows: https://openkakao.vercel.app/docs/automation/llm-agent-workflows/
 - Watch patterns: https://openkakao.vercel.app/docs/automation/watch-patterns/
 - Protocol docs: https://openkakao.vercel.app/docs/protocol/overview/
+- Android 26.7.1 LOCO static analysis: [docs/research/android-apk-26.7.1.md](docs/research/android-apk-26.7.1.md)
 
 Reverse engineering / local app-state diff:
 
@@ -326,6 +317,11 @@ Bug reports and PRs are welcome.
 
 - [kakaocli](https://github.com/silver-flight-group/kakaocli) (MIT) — `local-send`'s macOS Accessibility API automation (selecting chat rows, locating/driving the message input field) was ported to Rust from this project (`src/ax_send.rs`).
 - [Peekaboo](https://github.com/steipete/Peekaboo) (MIT) — `local-send` posts events directly to the target process via `CGEventPostToPid`, an approach borrowed from Peekaboo, to avoid the foreground-activation timing race that kakaocli's `send` hits ([silver-flight-group/kakaocli#9](https://github.com/silver-flight-group/kakaocli/issues/9)).
+
+### Contributors
+
+- [@twoimo](https://github.com/twoimo) — `local-send` fast path: reuses an already-open chat window to avoid a full chat-list AX snapshot that could take tens of seconds ([#35](https://github.com/JungHoonGhae/openkakao-cli/pull/35) → [#36](https://github.com/JungHoonGhae/openkakao-cli/pull/36)).
+- [@e-jung](https://github.com/e-jung) — KakaoTalk 26.7 saved-user-ID recovery with active-account-marker verification and regression coverage ([#51](https://github.com/JungHoonGhae/openkakao-cli/pull/51)).
 
 ## License
 

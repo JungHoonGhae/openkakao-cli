@@ -452,51 +452,33 @@ async fn handle_msg_packet(
     ctx: &mut WatchContext<'_>,
     client: &mut crate::loco::client::LocoClient,
 ) -> Result<()> {
-    let chat_id = packet
-        .body
-        .get_i64("chatId")
-        .or_else(|_| packet.body.get_i32("chatId").map(|v| v as i64))
-        .unwrap_or(0);
-
+    let messages = match crate::loco::message::received_messages(packet) {
+        Ok(messages) => messages,
+        Err(err) => {
+            eprintln!("[watch] Ignoring malformed MSG: {err}");
+            return Ok(());
+        }
+    };
+    let Some(message) = messages.first() else {
+        return Ok(());
+    };
+    let chat_id = message.chat_id;
     if let Some(filter) = ctx.options.filter_chat_id {
         if chat_id != filter {
             return Ok(());
         }
     }
-
     let chat_label = ctx
         .chat_names
         .get(&chat_id)
         .cloned()
-        .unwrap_or_else(|| format!("{}", chat_id));
-
-    let nick = packet
-        .body
-        .get_str("authorNickname")
-        .map(String::from)
-        .unwrap_or_else(|_| {
-            packet
-                .body
-                .get_document("author")
-                .ok()
-                .and_then(|a| a.get_str("nickName").ok())
-                .map(String::from)
-                .unwrap_or_else(|| "???".to_string())
-        });
-
-    let msg_type = packet.body.get_i32("type").unwrap_or(0);
-    let content = render_message_content(&packet.body, msg_type);
-    let log_id = packet
-        .body
-        .get_i64("logId")
-        .or_else(|_| packet.body.get_i32("logId").map(|v| v as i64))
-        .unwrap_or(0);
-    let author_id = packet
-        .body
-        .get_i64("authorId")
-        .or_else(|_| packet.body.get_i32("authorId").map(|v| v as i64))
-        .unwrap_or(0);
-    let attachment = packet.body.get_str("attachment").unwrap_or("").to_string();
+        .unwrap_or_else(|| chat_id.to_string());
+    let nick = message.nickname.to_string();
+    let msg_type = message.message_type;
+    let content = render_message_content(message.body, msg_type);
+    let log_id = message.log_id;
+    let author_id = message.author_id;
+    let attachment = message.attachment.to_string();
     let event = WatchMessageEvent {
         event_type: "message",
         received_at: chrono::Utc::now().to_rfc3339(),
@@ -533,17 +515,16 @@ async fn handle_msg_packet(
     }
 
     if log_id > 0 {
-        ctx.last_log_ids.insert(chat_id, log_id);
+        ctx.last_log_ids
+            .entry(chat_id)
+            .and_modify(|current| *current = (*current).max(log_id))
+            .or_insert(log_id);
     }
 
     // Cache message to local SQLite DB
     if let Some(db) = &ctx.message_db {
         if log_id > 0 {
-            let send_at = packet
-                .body
-                .get_i64("sendAt")
-                .or_else(|_| packet.body.get_i32("sendAt").map(|v| v as i64))
-                .unwrap_or(0);
+            let send_at = message.send_at;
             let cached = crate::message_db::CachedMessage {
                 chat_id,
                 log_id,
@@ -646,7 +627,24 @@ async fn handle_syncmsg_packet(
     packet: &crate::loco::packet::LocoPacket,
     ctx: &mut WatchContext<'_>,
 ) -> Result<()> {
-    let chat_id = get_bson_i64(&packet.body, &["chatId"]);
+    let messages = match crate::loco::message::received_messages(packet) {
+        Ok(messages) => messages,
+        Err(err) => {
+            eprintln!("[watch] Ignoring malformed SYNCMSG: {err}");
+            return Ok(());
+        }
+    };
+    for message in &messages {
+        handle_sync_message(message, ctx)?;
+    }
+    Ok(())
+}
+
+fn handle_sync_message(
+    message: &crate::loco::message::ReceivedMessage<'_>,
+    ctx: &mut WatchContext<'_>,
+) -> Result<()> {
+    let chat_id = message.chat_id;
     if let Some(filter) = ctx.options.filter_chat_id {
         if chat_id != filter {
             return Ok(());
@@ -657,14 +655,10 @@ async fn handle_syncmsg_packet(
         .get(&chat_id)
         .cloned()
         .unwrap_or_else(|| format!("{}", chat_id));
-    let log_id = get_bson_i64(&packet.body, &["logId"]);
-    let msg_type = packet.body.get_i32("type").unwrap_or(0);
-    let content = render_message_content(&packet.body, msg_type);
-    let nick = packet
-        .body
-        .get_str("authorNickname")
-        .map(String::from)
-        .unwrap_or_else(|_| "???".to_string());
+    let log_id = message.log_id;
+    let msg_type = message.message_type;
+    let content = render_message_content(message.body, msg_type);
+    let nick = message.nickname.to_string();
 
     if ctx.options.json {
         let sync_event = serde_json::json!({
@@ -674,6 +668,8 @@ async fn handle_syncmsg_packet(
             "chat_id": chat_id,
             "chat_name": chat_label,
             "log_id": log_id,
+            "author_id": message.author_id,
+            "attachment": message.attachment,
             "author_nickname": nick,
             "message_type": msg_type,
             "message": content,
@@ -696,15 +692,18 @@ async fn handle_syncmsg_packet(
     }
 
     if log_id > 0 {
-        ctx.last_log_ids.insert(chat_id, log_id);
+        ctx.last_log_ids
+            .entry(chat_id)
+            .and_modify(|current| *current = (*current).max(log_id))
+            .or_insert(log_id);
     }
 
     // Cache SYNCMSG to local SQLite DB
     if let Some(db) = &ctx.message_db {
         if log_id > 0 {
-            let author_id = get_bson_i64(&packet.body, &["authorId"]);
-            let send_at = get_bson_i64(&packet.body, &["sendAt"]);
-            let attachment = packet.body.get_str("attachment").unwrap_or("").to_string();
+            let author_id = message.author_id;
+            let send_at = message.send_at;
+            let attachment = message.attachment.to_string();
             let cached = crate::message_db::CachedMessage {
                 chat_id,
                 log_id,
@@ -1387,6 +1386,147 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn message_test_options() -> WatchOptions {
+        WatchOptions {
+            unattended: false,
+            allow_side_effects: false,
+            filter_chat_id: Some(101),
+            raw: false,
+            read_receipt: false,
+            max_reconnect: 0,
+            reconnect_delay_secs: 1,
+            reconnect_max_delay_secs: 1,
+            download_media: false,
+            download_dir: String::new(),
+            hook_cmd: None,
+            webhook_url: None,
+            webhook_headers: vec![],
+            webhook_signing_secret: None,
+            hook_chat_ids: vec![],
+            hook_keywords: vec![],
+            hook_types: vec![],
+            hook_fail_fast: false,
+            min_hook_interval_secs: 0,
+            min_webhook_interval_secs: 0,
+            hook_timeout_secs: 1,
+            webhook_timeout_secs: 1,
+            allow_insecure_webhooks: false,
+            webhook_format: WebhookFormat::Raw,
+            resume: false,
+            json: true,
+            capture: false,
+        }
+    }
+
+    fn test_chat_log(chat_id: i64, log_id: i64) -> bson::Document {
+        bson::doc! {
+            "chatId": chat_id, "logId": log_id, "authorId": 202_i64,
+            "type": 1, "message": "nested text", "sendAt": 1788760000,
+            "attachment": "{\"example\":true}",
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_msg_reaches_cache_and_preserves_resume_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::message_db::MessageDb::open_at(&dir.path().join("cache.db")).unwrap();
+        let options = message_test_options();
+        let names = HashMap::from([(101, "Example chat".to_string())]);
+        let mut cursors = HashMap::from([(101, 500)]);
+        let mut ctx = WatchContext {
+            chat_names: &names,
+            options: &options,
+            hook_config: &None,
+            last_log_ids: &mut cursors,
+            message_db: Some(&db),
+        };
+        // No socket, saved credentials or external service is used by this test.
+        let creds = crate::model::KakaoCredentials::new(
+            "fake".into(),
+            1,
+            "fake".into(),
+            "26.7.0".into(),
+            "fake".into(),
+            "fake".into(),
+        );
+        let mut client = crate::loco::client::LocoClient::new(creds);
+        let builder = crate::loco::packet::PacketBuilder::new();
+        let packet = builder.build(
+            "MSG",
+            bson::doc! {
+                "chatId": 101_i64, "authorNickname": "Tester", "chatLog": test_chat_log(101, 400),
+            },
+        );
+        handle_msg_packet(&packet, &mut ctx, &mut client)
+            .await
+            .unwrap();
+        let cached = db.get_messages(101, 10).unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].log_id, 400);
+        assert_eq!(cached[0].author_id, 202);
+        assert_eq!(cached[0].author_name, "Tester");
+        assert_eq!(cached[0].message, "nested text");
+        assert_eq!(cached[0].attachment, "{\"example\":true}");
+        assert_eq!(cached[0].send_at, 1788760000);
+        assert_eq!(ctx.last_log_ids[&101], 500);
+
+        // Filtering uses the decoded chat identity, including nested-only envelopes.
+        let filtered = builder.build("MSG", bson::doc! {"chatLog": test_chat_log(303, 700)});
+        handle_msg_packet(&filtered, &mut ctx, &mut client)
+            .await
+            .unwrap();
+        assert!(db.get_messages(303, 10).unwrap().is_empty());
+        assert!(!ctx.last_log_ids.contains_key(&303));
+
+        let malformed = builder.build("MSG", bson::doc! {"chatId": 101_i64, "chatLog": {}});
+        handle_msg_packet(&malformed, &mut ctx, &mut client)
+            .await
+            .unwrap();
+        assert_eq!(db.get_messages(101, 10).unwrap().len(), 1);
+        assert_eq!(ctx.last_log_ids[&101], 500);
+        let newer = builder.build("MSG", bson::doc! {"chatLog": test_chat_log(101, 600)});
+        handle_msg_packet(&newer, &mut ctx, &mut client)
+            .await
+            .unwrap();
+        assert_eq!(ctx.last_log_ids[&101], 600);
+    }
+
+    #[tokio::test]
+    async fn sync_batch_caches_each_matching_log_without_regressing_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::message_db::MessageDb::open_at(&dir.path().join("cache.db")).unwrap();
+        let options = message_test_options();
+        let names = HashMap::new();
+        let mut cursors = HashMap::new();
+        let mut ctx = WatchContext {
+            chat_names: &names,
+            options: &options,
+            hook_config: &None,
+            last_log_ids: &mut cursors,
+            message_db: Some(&db),
+        };
+        let builder = crate::loco::packet::PacketBuilder::new();
+        let packet = builder.build("SYNCMSG", bson::doc! {
+            "isOK": true,
+            "chatLogs": [test_chat_log(101, 600), test_chat_log(303, 700), test_chat_log(101, 400)],
+        });
+        handle_syncmsg_packet(&packet, &mut ctx).await.unwrap();
+        assert_eq!(db.get_messages(101, 10).unwrap().len(), 2);
+        assert!(db.get_messages(303, 10).unwrap().is_empty());
+        assert_eq!(*ctx.last_log_ids, HashMap::from([(101, 600)]));
+
+        // A valid first entry cannot partially update state when a later entry is invalid.
+        let bad = builder.build(
+            "SYNCMSG",
+            bson::doc! {"chatLogs": [test_chat_log(101, 800), bson::doc! {}]},
+        );
+        handle_syncmsg_packet(&bad, &mut ctx).await.unwrap();
+        let empty = builder.build("SYNCMSG", bson::doc! {"isOK": true, "chatLogs": []});
+        handle_syncmsg_packet(&empty, &mut ctx).await.unwrap();
+        assert_eq!(db.get_messages(101, 10).unwrap().len(), 2);
+        assert_eq!(*ctx.last_log_ids, HashMap::from([(101, 600)]));
+    }
 
     fn default_test_hook_config() -> WatchHookConfig {
         WatchHookConfig {

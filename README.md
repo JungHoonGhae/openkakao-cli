@@ -48,16 +48,6 @@
 </div>
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=JungHoonGhae%2Fopenkakao&type=date&legend=top-left">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&theme=dark&legend=top-left" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&legend=top-left" />
-      <img alt="Star History Chart" src="https://api.star-history.com/image?repos=JungHoonGhae/openkakao-cli&type=date&legend=top-left" width="600" />
-    </picture>
-  </a>
-</p>
-
-<p align="center">
   <img src="assets/thumbnail-ko.png" alt="openkakao" width="720" />
 </p>
 
@@ -284,6 +274,7 @@ cargo install --path .
 - LLM / agent 워크플로: https://openkakao.vercel.app/docs/automation/llm-agent-workflows/
 - watch 패턴: https://openkakao.vercel.app/docs/automation/watch-patterns/
 - 프로토콜 문서: https://openkakao.vercel.app/docs/protocol/overview/
+- Android 26.7.1 LOCO 정적 분석: [docs/research/android-apk-26.7.1.md](docs/research/android-apk-26.7.1.md)
 
 Reverse engineering / local app-state diff:
 
@@ -328,6 +319,7 @@ cargo build --release
 ### Contributors
 
 - [@twoimo](https://github.com/twoimo) — `local-send` fast path: 이미 열린 채팅창을 재사용해 전체 채팅목록 AX 스냅샷(수십 초)을 회피 ([#35](https://github.com/JungHoonGhae/openkakao-cli/pull/35) → [#36](https://github.com/JungHoonGhae/openkakao-cli/pull/36)).
+- [@e-jung](https://github.com/e-jung) — KakaoTalk 26.7에서 저장된 사용자 ID를 활성 계정 마커로 검증해 복구하고 회귀 테스트 추가 ([#51](https://github.com/JungHoonGhae/openkakao-cli/pull/51)).
 
 ## License
 
