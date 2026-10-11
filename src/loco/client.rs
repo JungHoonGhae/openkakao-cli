@@ -8,7 +8,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::rustls::{
+    self,
+    client::{
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        WebPkiServerVerifier,
+    },
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+};
 use tokio_rustls::TlsConnector;
 
 use crate::model::KakaoCredentials;
@@ -199,12 +207,16 @@ async fn tls_connect(host: &str, port: u16) -> Result<TlsStream<TcpStream>> {
     let mut root_store = RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-    let config = ClientConfig::builder_with_provider(Arc::new(
-        tokio_rustls::rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(root_store)
-    .with_no_client_auth();
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let verifier =
+        WebPkiServerVerifier::builder_with_provider(Arc::new(root_store), provider.clone())
+            .build()?;
+
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(KakaoVerifier(verifier)))
+        .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));
     let server_name = host.to_string().try_into()?;
@@ -292,6 +304,53 @@ pub struct LocoClient {
 pub struct ProbeCommandResult {
     pub response: Option<LocoPacket>,
     pub pushes: Vec<LocoPacket>,
+}
+
+#[derive(Debug)]
+struct KakaoVerifier(Arc<WebPkiServerVerifier>);
+
+impl ServerCertVerifier for KakaoVerifier {
+    fn verify_server_cert(
+        &self,
+        cert: &CertificateDer<'_>,
+        chain: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let mut error = rustls::Error::General("Certificate does not match Kakao names".into());
+
+        for domain in ["kakao.com", "probe.kakao.com"] {
+            let name = ServerName::try_from(domain).unwrap();
+            match self.0.verify_server_cert(cert, chain, &name, ocsp, now) {
+                Ok(ok) => return Ok(ok),
+                Err(e) => error = e,
+            }
+        }
+        Err(error)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        msg: &[u8],
+        cert: &CertificateDer<'_>,
+        sig: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.0.verify_tls12_signature(msg, cert, sig)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        msg: &[u8],
+        cert: &CertificateDer<'_>,
+        sig: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.0.verify_tls13_signature(msg, cert, sig)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.supported_verify_schemes()
+    }
 }
 
 impl LocoClient {

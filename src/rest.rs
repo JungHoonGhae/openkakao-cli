@@ -5,6 +5,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE,
 };
+use serde_json::json;
 use serde_json::Value;
 
 use sha2::{Digest, Sha512};
@@ -384,10 +385,97 @@ impl KakaoRestClient {
         })
     }
 
-    // NOTE: a passcode/register_device flow (request_passcode.json,
-    // register_device.json) was attempted in v1.3.2 to handle status=-100, but recent
-    // KakaoTalk macOS builds do not expose those routes (they 404). It was removed in
-    // v1.3.3 to avoid encouraging retries that can get an account blocked. See #20/#22.
+    /// POST a json to a `/mac/account/<endpoint>` route with the
+    /// unauthenticated header set (A, User-Agent, optional X-VC) and parse the JSON
+    fn post_account_json(
+        &self,
+        endpoint: &str,
+        body: &str,
+        x_vc: &str,
+        user_agent: &str,
+    ) -> Result<Value> {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("ko"));
+
+        let a_header = if self.creds.a_header.is_empty() {
+            format!("mac/{}/ko", self.creds.app_version)
+        } else {
+            self.creds.a_header.clone()
+        };
+        headers.insert(
+            "A",
+            HeaderValue::from_str(&a_header).context("Invalid A header")?,
+        );
+
+        headers.insert(
+            "User-Agent",
+            HeaderValue::from_str(user_agent).context("Invalid User-Agent header")?,
+        );
+
+        if !x_vc.is_empty() {
+            headers.insert(
+                "X-VC",
+                HeaderValue::from_str(x_vc).context("Invalid X-VC header")?,
+            );
+        }
+
+        let response = self
+            .client
+            .post(format!("{BASE_URL}/mac/account/{endpoint}"))
+            .headers(headers)
+            .body(body.to_string())
+            .send()
+            .with_context(|| format!("{endpoint} request failed"))?;
+
+        let text = response.text().context("Failed to read response")?;
+        serde_json::from_str(&text).with_context(|| {
+            format!(
+                "Failed to parse {} response: {}",
+                endpoint,
+                &text[..200.min(text.len())]
+            )
+        })
+    }
+
+    pub fn request_passcode(
+        &self,
+        email: &str,
+        password: &str,
+        device_uuid: &str,
+        device_name: &str,
+    ) -> Result<Value> {
+        let user_agent = format!("KT/{} Mc/26.1.0 ko", self.creds.app_version);
+        let xvc = Self::generate_xvc(&user_agent, email, device_uuid);
+        let body = json!({
+            "email": email,
+            "password": password,
+            "permanent": true,
+            "device": {
+                "name": device_name,
+                "uuid": device_uuid,
+                "model": device_name,
+                "osVersion": "26.1.0"
+            }
+        })
+        .to_string();
+        self.post_account_json("passcodeLogin/generate", &body, &xvc, &user_agent)
+    }
+
+    pub fn register_device(&self, email: &str, password: &str, device_uuid: &str) -> Result<Value> {
+        let user_agent = format!("KT/{} Mc/26.1.0 ko", self.creds.app_version);
+        let xvc = Self::generate_xvc(&user_agent, email, device_uuid);
+        let body = json!({
+            "email": email,
+            "password": password,
+            "device": {
+                "uuid": device_uuid
+            }
+        })
+        .to_string();
+        self.post_account_json("passcodeLogin/registerDevice", &body, &xvc, &user_agent)
+    }
 
     pub fn get_settings(&self) -> Result<Value> {
         self.request(
