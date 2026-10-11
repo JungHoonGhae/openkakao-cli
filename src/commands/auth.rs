@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use owo_colors::OwoColorize;
 use serde_json::Value;
-use std::{thread, time::Duration};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::auth::{count_authorization_rows, extract_refresh_token, get_credential_candidates};
 use crate::auth_flow::{
@@ -321,11 +324,11 @@ pub fn cmd_login_manual(
     let sha256 = Sha256::digest(platform_uuid.as_bytes());
 
     let mut combined = Vec::with_capacity(52);
-    combined.extend_from_slice(&sha1);   // 20 bytes
+    combined.extend_from_slice(&sha1); // 20 bytes
     combined.extend_from_slice(&sha256); // 32 bytes
 
     let device_uuid = STANDARD.encode(combined);
-    
+
     let app_version = resolve_login_app_version(app_version, installed_kakaotalk_version());
     eprintln!("Using app version {} for login headers.", app_version);
 
@@ -397,32 +400,66 @@ fn register_new_device(
         anyhow::bail!("Could not request a passcode (status={status}): {message}");
     }
 
-    eprintln!("Passcode is: {}", resp.get("passcode").and_then(Value::as_str).unwrap_or("").to_string());
-    eprintln!("Click the device registration message KakaoTalk sent to your phone, then enter the passcode within {} seconds.", resp.get("remainingSeconds").and_then(Value::as_i64).unwrap_or(-1));
+    let passcode = resp.get("passcode").and_then(Value::as_str).unwrap_or("");
+    let remaining = resp
+        .get("remainingSeconds")
+        .and_then(Value::as_i64)
+        .filter(|secs| *secs > 0)
+        .unwrap_or(180)
+        .min(600);
+    eprintln!("Passcode is: {passcode}");
+    eprintln!(
+        "Click the device registration message KakaoTalk sent to your phone, then enter the passcode within {remaining} seconds."
+    );
 
+    // Bounded poll: stop once the passcode window closes. Each poll re-sends the
+    // credentials, and repeated unregistered-device logins can get an account's
+    // sub-device login blocked (#20, #22), so never loop forever here.
+    let deadline = Instant::now() + Duration::from_secs(remaining as u64);
     loop {
         let resp = client.register_device(email, password, device_uuid)?;
         let status = resp.get("status").and_then(Value::as_i64).unwrap_or(-1);
-        
-        if status != -100 {
-            if status != 0 {
-                if let Some((status, message)) = response_error(&resp) {
-                    anyhow::bail!(
-                        "Could not register device (status={status}): {message}"
-                    );
-                }
+
+        if status != DEVICE_NOT_REGISTERED {
+            if let Some((status, message)) = response_error(&resp) {
+                print_registration_retry_warning();
+                anyhow::bail!("Could not register device (status={status}): {message}");
             }
             break;
         }
 
-        let remain = resp.get("remainingSeconds").and_then(Value::as_i64).unwrap_or(-1);
-        let interval = resp.get("nextRequestIntervalInSeconds").and_then(Value::as_u64).unwrap_or(1);
-        eprintln!("{} seconds remaining", remain);
+        if Instant::now() >= deadline {
+            print_registration_retry_warning();
+            anyhow::bail!("passcode expired before the device was registered");
+        }
+
+        let remain = resp
+            .get("remainingSeconds")
+            .and_then(Value::as_i64)
+            .unwrap_or(-1);
+        let interval = resp
+            .get("nextRequestIntervalInSeconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .clamp(1, 30);
+        eprintln!("{remain} seconds remaining");
         thread::sleep(Duration::from_secs(interval));
     }
 
     eprintln!("Device registered. Completing login ...");
     Ok(())
+}
+
+/// Device registration failed or timed out. Warn against blind retries: repeated
+/// logins from an unregistered device have gotten accounts' sub-device login
+/// blocked before (#20, #22).
+fn print_registration_retry_warning() {
+    eprintln!();
+    eprintln!("  🚨 Do NOT keep retrying `login --manual`. Repeated logins from an");
+    eprintln!("     unregistered device can get your account's sub-device login");
+    eprintln!("     blocked (#20, #22). Approve the request on your phone first,");
+    eprintln!("     then run the login once more.");
+    eprintln!();
 }
 
 /// Return `(status, message)` when a KakaoTalk JSON reply reports a non-zero status,

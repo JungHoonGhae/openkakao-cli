@@ -5,8 +5,8 @@ use reqwest::blocking::Client;
 use reqwest::header::{
     HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE,
 };
-use serde_json::Value;
 use serde_json::json;
+use serde_json::Value;
 
 use sha2::{Digest, Sha512};
 
@@ -395,10 +395,7 @@ impl KakaoRestClient {
         user_agent: &str,
     ) -> Result<Value> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("ko"));
 
@@ -461,16 +458,12 @@ impl KakaoRestClient {
                 "model": device_name,
                 "osVersion": "26.1.0"
             }
-        }).to_string();
+        })
+        .to_string();
         self.post_account_json("passcodeLogin/generate", &body, &xvc, &user_agent)
     }
 
-    pub fn register_device(
-        &self,
-        email: &str,
-        password: &str,
-        device_uuid: &str,
-    ) -> Result<Value> {
+    pub fn register_device(&self, email: &str, password: &str, device_uuid: &str) -> Result<Value> {
         let user_agent = format!("KT/{} Mc/26.1.0 ko", self.creds.app_version);
         let xvc = Self::generate_xvc(&user_agent, email, device_uuid);
         let body = json!({
@@ -479,7 +472,8 @@ impl KakaoRestClient {
             "device": {
                 "uuid": device_uuid
             }
-        }).to_string();
+        })
+        .to_string();
         self.post_account_json("passcodeLogin/registerDevice", &body, &xvc, &user_agent)
     }
 

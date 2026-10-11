@@ -8,18 +8,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::{
     self,
     client::{
-        danger::{
-            HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-        },
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
         WebPkiServerVerifier,
     },
     pki_types::{CertificateDer, ServerName, UnixTime},
     ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
 };
+use tokio_rustls::TlsConnector;
 
 use crate::model::KakaoCredentials;
 
@@ -210,11 +208,9 @@ async fn tls_connect(host: &str, port: u16) -> Result<TlsStream<TcpStream>> {
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let verifier = WebPkiServerVerifier::builder_with_provider(
-        Arc::new(root_store),
-        provider.clone(),
-    )
-    .build()?;
+    let verifier =
+        WebPkiServerVerifier::builder_with_provider(Arc::new(root_store), provider.clone())
+            .build()?;
 
     let config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()?
@@ -322,9 +318,7 @@ impl ServerCertVerifier for KakaoVerifier {
         ocsp: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let mut error = rustls::Error::General(
-            "Certificate does not match Kakao names".into(),
-        );
+        let mut error = rustls::Error::General("Certificate does not match Kakao names".into());
 
         for domain in ["kakao.com", "probe.kakao.com"] {
             let name = ServerName::try_from(domain).unwrap();
