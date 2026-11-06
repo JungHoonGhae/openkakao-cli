@@ -23,7 +23,20 @@
 **한국어** | [English](README.en.md)
 
 > [!TIP]
-> **로그인 없이 바로 동작합니다.** `local-send`/`ax-read`는 macOS Accessibility API로 카카오톡 UI를 직접 읽고 조작해서, 서버 세션 없이도 실제 메시지 전송과 최근 대화 읽기를 지원합니다. KakaoTalk 앱이 실행 중이고 로그인만 되어 있으면 됩니다 — 아래 [Quick Start](#quick-start) 참고.
+> **로그인 없이, 0.4초 만에, 계정 제재의 알려진 원인 없이.** `local-send`/`ax-read`는 이미 로그인된 **공식 카카오톡 앱**을 macOS Accessibility API로 직접 조작합니다. 서버 로그인, LOCO 프로토콜 통신, DB 복호화를 하지 않으므로 제재 사례가 보고된 경로(미등록 기기 로그인, 비공식 클라이언트 통신)를 아예 거치지 않습니다. 아래 [Quick Start](#quick-start) 참고.
+
+### ⚡ 압도적으로 빠릅니다
+
+| 작업 (실기기: Mac Studio, KakaoTalk 26.8) | v1.9 | **v1.11** |
+|---|---|---|
+| 열린 방 최근 메시지 읽기 (`ax-read`) | 26.8초 | **0.2초** (약 130배) |
+| 메시지 전송, **말풍선이 생긴 것까지 확인** (`local-send`) | 44초 | **0.4초** (약 100배) |
+| 닫힌 방을 찾아 열기 (`--open-if-needed`) | 6.5초 (v1.10) | **3.2초** (결과 140행인 최악 조건 실측, 카카오톡 자체 검색 사용) |
+| 화이트리스트 방으로 보낼 때 Touch ID | 매번 | **없음** (등록이 곧 사전 승인) |
+
+- **보내고 끝이 아닙니다.** 0.4초 안에 입력창이 비워지고 같은 내용의 새 발신 말풍선이 생긴 것까지 확인합니다. 확인하지 못하면 `delivery_uncertain`으로 알리고 절대 자동 재시도하지 않습니다.
+- **포커스를 뺏지 않습니다.** 열린 채팅 창이면 카카오톡을 앞으로 띄우지 않고, 키보드·마우스 입력도 흉내 내지 않습니다.
+- **휴대폰만으로 운영됩니다.** 다른 기기 로그인으로 로그아웃돼도 `ax-login`이 키체인 비밀번호로 다시 로그인합니다.
 
 > [!NOTE]
 > 서버 로그인(`login --save`/`login --manual`)은 최근 KakaoTalk macOS 빌드에서 대부분 동작하지 않습니다 ([#15](https://github.com/JungHoonGhae/openkakao-cli/issues/15), [#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)). **미등록 기기로 로그인을 반복 시도하지 마세요** — 카카오가 계정의 "서브 디바이스 로그인"을 차단하거나 계정을 제재할 수 있습니다(실제 피해 사례가 보고되었습니다). 로컬 SQLCipher DB(`local-chats`/`local-read`/`local-search`)도 최신 빌드에서 키 유도 공식이 어긋나 신뢰할 수 없습니다 — 읽기는 `ax-read`, 수신 감지는 `notif-watch`(알림 스트림, 창 무관·자기발신 배제) 또는 `ax-watch`를 쓰세요.
@@ -72,13 +85,19 @@ openkakao-cli init --yes --allow-chat "나와의 채팅에 표시되는 이름" 
 # 2. 메시지 보내기 — 서버 접촉 없음, 실제 카톡 UI를 직접 조작
 #    열려 있는 채팅 창이면 카카오톡을 앞으로 띄우지 않고 보냅니다(포커스 유지)
 openkakao-cli local-send "채팅방 표시 이름" "Hello from CLI!" --dry-run   # 미리보기
-openkakao-cli local-send "채팅방 표시 이름" "Hello from CLI!" -y         # 실제 전송
+openkakao-cli local-send "채팅방 표시 이름" "Hello from CLI!" -y         # 실제 전송 (화이트리스트 방은 Touch ID 없음)
+openkakao-cli --open-if-needed local-send "닫힌 방" "안녕" -y              # 닫힌 방도 카카오톡 검색으로 찾아 열고 전송
+openkakao-cli --open-if-needed --pick 1 local-send "같은 이름의 방" "안녕" -y   # 이름이 겹치면 후보 번호로 선택(Touch ID 필요)
 openkakao-cli local-send-file "채팅방 표시 이름" ./보고서.docx --dry-run   # 파일(docx·pdf·zip 등) 미리보기
 openkakao-cli local-send-file "채팅방 표시 이름" ./보고서.docx -y         # 공식 앱으로 파일 전송
 openkakao-cli local-send-photo "채팅방 표시 이름" ./family.jpg -y        # 사진 전송
 
 # 3. 최근 메시지 읽기 — 같은 방식(AX)으로 화면에 보이는 메시지를 스크랩
 openkakao-cli ax-read "채팅방 표시 이름" -n 20
+
+# 다른 기기 로그인으로 로그아웃됐을 때 — 키체인에 비밀번호를 한 번 저장해 두면 원격에서도 복구
+security add-generic-password -s openkakao.kakaotalk -a 'you@example.com' -w   # 숨김 입력, 최초 1회
+openkakao-cli ax-login --account you@example.com
 
 # 열린 채팅 창을 읽기 전용으로 점검 (입력창·전송 버튼·파일 버튼)
 openkakao-cli doctor --chat "채팅방 표시 이름"
@@ -177,6 +196,10 @@ openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/skills@op
 
 ## 핵심
 
+- **빠름**: 전송 0.4초(말풍선 확인 포함), 읽기 0.2초. v1.9 대비 약 100배 이상
+- **계정 제재의 알려진 원인을 쓰지 않음**: 서버 로그인·LOCO 통신 없이 공식 앱만 조작
+- **사람 승인 모델**: 화이트리스트 방은 바로 전송, 그 밖의 방은 ⚠ 표시와 Touch ID. 이름이 같은 방은 추측하지 않고 `--pick`
+- **원격 복구**: `ax-login`(키체인), 에이전트용 `--json` 에러의 `disposition`(재시도해도 중복 전송이 없는지)
 - `local-send`/`ax-read`로 **로그인 없이** 실제 메시지 전송·읽기 (macOS Accessibility API로 카톡 UI를 직접 조작, 서버 통신 없음)
 - macOS 카카오톡 앱에서 인증 정보 추출
 - 채팅, 메시지, 멤버, 친구, 프로필 조회
@@ -272,13 +295,17 @@ openkakao-cli safe-send cancel <intent_id>
 |------|------|------|
 | `accessibility_not_granted` | 실행 중인 앱에 손쉬운 사용 권한이 없음 | 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 터미널(또는 Orca 등)을 켭니다. SSH에서는 `/usr/libexec/sshd-keygen-wrapper`를 추가합니다 |
 | `kakaotalk_not_running` | 카카오톡이 실행 중이 아님 | `open -g -b com.kakao.KakaoTalkMac`(백그라운드 실행) 또는 `openkakao-cli init` |
-| `kakaotalk_signed_out` | `로그인` 창만 있음 | 이 Mac에서 로그인 |
+| `kakaotalk_signed_out` | `로그인` 창만 있음 | `openkakao-cli ax-login`(키체인 비밀번호) 또는 이 Mac에서 로그인 |
+| `login_rejected` | 계정 또는 비밀번호가 틀림 | **재시도하지 마세요**(잠금 위험). 로그인 ID(보통 이메일)와 키체인 비밀번호를 확인합니다 |
+| `login_needs_human`, `login_secret_missing` | 기기 인증·알 수 없는 창 / 키체인에 비밀번호 없음 | Mac에서 직접 마무리 / `security add-generic-password -s openkakao.kakaotalk -a <ID> -w` |
+| `chat_ambiguous` | 같은 이름의 방이 여럿 | `--open-if-needed`가 시간·미리보기·📌로 번호를 매겨 보여 줍니다. `--pick N`으로 선택(Touch ID 필요) |
+| `chat_not_allowed` | 화이트리스트 밖의 방에서 Touch ID를 하지 않음 | 승인하거나 `init --allow-chat`으로 등록 |
 | `main_window_not_visible`, `kakaotalk_not_on_all_spaces` | 메인 창이 닫혔거나 다른 Space에 있음 | `openkakao-cli init --all-spaces`(Dock → 옵션 → 지정 → 모든 데스크탑과 같은 설정을 기록하고 Dock을 한 번 재시작) |
 | `chat_window_not_open` | 같은 제목의 채팅 창이 열려 있지 않음 | 채팅 창을 한 번 열어 두거나 `--open-if-needed` |
 | `chat_not_found`, `chat_list_filtered` | 채팅 목록에 로드되지 않았거나 검색어로 걸러짐 | 검색창을 비우고 목록을 스크롤하거나 탭을 바꿔 다시 그리게 합니다. 목록은 메인 창이 다시 그려지기 전까지 예전 상태일 수 있습니다 |
 | `send_button_missing` | 이 빌드가 `전송` 버튼을 AX에 노출하지 않음 | `--fallback-keys` |
 | `menu_not_found` | 컨텍스트 메뉴를 AX에서 찾지 못함(다른 동작은 하지 않음) | 다시 시도하거나 채팅 창을 직접 엽니다. 메뉴가 떠 있으면 다른 곳을 클릭해 닫습니다. **Esc는 누르지 마세요**(카카오톡이 창을 닫습니다) |
-| `composer_busy` | 입력창에 초안이 있거나 답장·수정 중 | 카카오톡에서 보내거나 지우거나 배너의 X로 취소 |
+| `composer_busy` | 입력창에 초안이 있거나 답장·수정 중 | `doctor --chat`으로 초안 확인 후 `--discard-draft`(지우기 전 내용 출력) 또는 카카오톡에서 정리 |
 | `message_not_found`, `message_ambiguous` | 대상 말풍선을 못 찾았거나 같은 텍스트가 둘 이상 | 최근 약 40행만 찾습니다. 화면에 보이게 스크롤하거나 `--to-last` |
 | `action_unverified` | 답장·수정 상태가 확인되지 않아 더 진행하지 않음 | 채팅 창을 확인하고 남은 배너를 X로 닫습니다(Esc 금지) |
 | `staging_conflict` | `~/Downloads`에 같은 이름의 다른 파일이 있음 | 파일을 다운로드·바탕화면·문서 최상위로 옮겨 보내거나 이름을 바꿉니다 |

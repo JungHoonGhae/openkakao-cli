@@ -23,7 +23,20 @@
 [한국어](README.md) | **English**
 
 > [!TIP]
-> **Works fully without logging in.** `local-send`/`ax-read` drive the real KakaoTalk UI directly via the macOS Accessibility API — no server session needed for either sending real messages or reading recent chat history. Just KakaoTalk running and already logged in — see [Quick Start](#quick-start) below.
+> **No login, 0.4 s per send, none of the known account-sanction triggers.** `local-send`/`ax-read` drive the **official KakaoTalk app** you are already signed in to, through the macOS Accessibility API. There is no server login, no LOCO protocol traffic and no database decryption, so the paths with reported sanctions (unregistered-device logins, unofficial-client traffic) are never used. See [Quick Start](#quick-start).
+
+### ⚡ Fast
+
+| Task (real device: Mac Studio, KakaoTalk 26.8) | v1.9 | **v1.11** |
+|---|---|---|
+| Read an open chat's recent messages (`ax-read`) | 26.8 s | **0.2 s** (~130×) |
+| Send a message, **verified by its new bubble** (`local-send`) | 44 s | **0.4 s** (~100×) |
+| Find and open a closed chat (`--open-if-needed`) | 6.5 s (v1.10) | **3.2 s** (worst case measured, 140 matching rows; KakaoTalk's own search) |
+| Touch ID when sending to an allowlisted chat | every send | **none** (allowlisting is the approval) |
+
+- **Verified, not just sent.** Within those 0.4 s the composer clears and an additional exact-text outgoing bubble appears. When that cannot be proven the result is `delivery_uncertain`, and it is never retried automatically.
+- **Your focus stays.** An open chat window is used without raising KakaoTalk or posting keyboard or mouse events.
+- **Runs from your phone.** If a login on another device signs this Mac out, `ax-login` signs it back in from the keychain.
 
 > [!NOTE]
 > Server login (`login --save`/`login --manual`) is broken on most recent KakaoTalk macOS builds ([#15](https://github.com/JungHoonGhae/openkakao-cli/issues/15), [#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)). **Do NOT repeatedly retry login from an unregistered device** — Kakao may block your account's "sub-device login" or restrict the account (this has actually been reported). The local SQLCipher DB path (`local-chats`/`local-read`/`local-search`) is also currently unreliable on recent builds — use `ax-read` for reads, and `notif-watch` (notification stream, window-independent, self-sends excluded) or `ax-watch` for receive detection.
@@ -72,10 +85,16 @@ openkakao-cli init --yes --allow-chat "your memo chat's display name" --skill cl
 
 # 2. Send (no server contact; an open chat window is used without raising KakaoTalk)
 openkakao-cli local-send "chat display name" "Hello from CLI!" --dry-run   # preview
-openkakao-cli local-send "chat display name" "Hello from CLI!" -y         # actually send
+openkakao-cli local-send "chat display name" "Hello from CLI!" -y         # actually send (no Touch ID for allowlisted chats)
+openkakao-cli --open-if-needed local-send "closed chat" "hi" -y            # finds and opens a closed chat via KakaoTalk's search
+openkakao-cli --open-if-needed --pick 1 local-send "same-name chat" "hi" -y   # duplicates: choose by number (needs Touch ID)
 openkakao-cli local-send-file "chat display name" ./report.docx --dry-run  # any file: docx, pdf, zip, ...
 openkakao-cli local-send-file "chat display name" ./report.docx -y        # send through the official app
 openkakao-cli local-send-photo "chat display name" ./family.jpg -y        # send a photo
+
+# Signed out by a login on another device: save the password in the keychain once, recover remotely
+security add-generic-password -s openkakao.kakaotalk -a 'you@example.com' -w   # prompts without echo
+openkakao-cli ax-login --account you@example.com
 
 # 3. Read recent messages — same AX approach, scrapes what's rendered on screen
 openkakao-cli ax-read "chat display name" -n 20
@@ -180,6 +199,10 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/skills@openka
 
 ## Highlights
 
+- **Fast**: 0.4 s per verified send, 0.2 s per read, about 100× faster than v1.9
+- **None of the known sanction triggers**: no server login or LOCO traffic, only the official app is driven
+- **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID; same-name chats are never guessed (`--pick`)
+- **Remote recovery**: `ax-login` (keychain), and `disposition` in every `--json` error (whether a retry could send twice)
 - Send and read real messages **without logging in**, via `local-send`/`ax-read` (drives the KakaoTalk UI directly through the macOS Accessibility API, no server contact)
 - Extracts auth data from the macOS KakaoTalk app
 - Reads chats, messages, members, friends, and profiles
@@ -275,13 +298,17 @@ With `--json`, failures print `{"error": {"code", "message", "fix", "disposition
 |------|-------|-----|
 | `accessibility_not_granted` | The app running the CLI lacks Accessibility | System Settings → Privacy & Security → Accessibility: enable your terminal (or Orca, ...). Over SSH add `/usr/libexec/sshd-keygen-wrapper` |
 | `kakaotalk_not_running` | KakaoTalk is not running | `open -g -b com.kakao.KakaoTalkMac` (background launch) or `openkakao-cli init` |
-| `kakaotalk_signed_out` | Only the `로그인` window is showing | Sign in on this Mac |
+| `kakaotalk_signed_out` | Only the `로그인` window is showing | `openkakao-cli ax-login` (keychain password) or sign in on this Mac |
+| `login_rejected` | Wrong account or password | **Do not retry** (lockout risk). Check the login id (usually an email) and the keychain password |
+| `login_needs_human`, `login_secret_missing` | Device check or unknown dialog / no keychain password | Finish on the Mac / `security add-generic-password -s openkakao.kakaotalk -a <id> -w` |
+| `chat_ambiguous` | Several chats share the exact name | `--open-if-needed` numbers them (time, preview, 📌); choose with `--pick N` (needs Touch ID) |
+| `chat_not_allowed` | Touch ID was not given for a chat outside the allowlist | Approve the prompt, or allowlist it with `init --allow-chat` |
 | `main_window_not_visible`, `kakaotalk_not_on_all_spaces` | Main window closed or on another Space | `openkakao-cli init --all-spaces` (records Dock → Options → Assign To → All Desktops and restarts the Dock once) |
 | `chat_window_not_open` | No open window titled exactly like the chat | Open the chat window once, or pass `--open-if-needed` |
 | `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
 | `send_button_missing` | This build exposes no `전송` button | `--fallback-keys` |
 | `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc**: KakaoTalk closes its windows on Esc |
-| `composer_busy` | The composer holds a draft or a pending reply/edit | Send, clear or cancel it (the X next to its banner) in KakaoTalk |
+| `composer_busy` | The composer holds a draft or a pending reply/edit | Inspect it with `doctor --chat`, then `--discard-draft` (prints it before clearing) or tidy it up in KakaoTalk |
 | `message_not_found`, `message_ambiguous` | No bubble matched, or several share the exact text | Only the newest ~40 rows are searched; scroll the bubble into view, or use `--to-last` |
 | `action_unverified` | KakaoTalk did not show the expected reply/edit state, so nothing more was done | Check the chat window and close a leftover banner with its X (never Esc) |
 | `staging_conflict` | `~/Downloads` already has a different file with this name | Send it from the top level of Downloads, Desktop or Documents, or rename it |
