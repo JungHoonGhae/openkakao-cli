@@ -108,7 +108,7 @@ export default function Page() {
             Turn KakaoTalk into a <span className="font-medium text-brand">local workflow surface</span>.
           </p>
           <p className="mt-3 max-w-3xl text-base leading-7 text-fd-muted-foreground md:text-lg">
-            Read, watch, export, and automate with a clear local boundary.
+            No login, 0.4 s per verified send, none of the known account-sanction triggers: it drives the official app you are already signed in to.
           </p>
         </div>
 
@@ -138,7 +138,7 @@ function InstallCta() {
             Install in minutes.
           </h2>
           <p className="mb-8 text-lg leading-8 text-white/70">
-            Install the CLI, reuse local app state, and read your first chat without leaving your machine.
+            Install the CLI, grant Accessibility, and send your first verified message. No server login.
           </p>
           <div className="flex flex-wrap gap-3">
             <Link href="/docs/getting-started/quickstart" className={cn(buttonVariants(), 'bg-[#F1E57A] text-neutral-950 hover:bg-[#f5e98f]')}>
@@ -161,11 +161,11 @@ function InstallCta() {
               <span className="text-white/50">brew install </span>
               <span>openkakao-cli</span>
             </div>
-            <div className="mt-3 font-mono text-sm text-white/55 md:text-base">openkakao-cli login --save</div>
+            <div className="mt-3 font-mono text-sm text-white/55 md:text-base">openkakao-cli local-send "Me" "hi"</div>
             <div className="mt-10 grid gap-2 text-sm text-white/55">
-              <div>Reading local KakaoTalk state...</div>
-              <div>Validating account session...</div>
-              <div className="text-[#F1E57A]">Ready for your first local workflow.</div>
+              <div>Finding the chat through Accessibility...</div>
+              <div>Verifying the new bubble...</div>
+              <div className="text-[#F1E57A]">Delivered and verified in 0.4 s.</div>
             </div>
           </div>
         </div>
@@ -395,11 +395,11 @@ function ForEngineers() {
         </p>
         <div className="mt-auto flex flex-col gap-2 @container mask-[linear-gradient(to_bottom,white,transparent)]">
           {[
-            { name: 'read', description: 'Cheap cache-backed message reads when GUI recency is enough.' },
+            { name: 'ax-read', description: 'Read an open chat in 0.2 s through Accessibility. No login.' },
             { name: 'loco-read', description: 'Reliable history fetches for exports and automation.' },
             { name: 'watch', description: 'Real-time monitoring with reconnect handling and narrow side effects.' },
-            { name: 'send', description: 'Controlled outbound messaging with explicit unattended policy.' },
-            { name: 'login / relogin / renew', description: 'Recovery and credential reuse around the real app state.' },
+            { name: 'local-send', description: 'Send to an allowlisted chat in 0.4 s, verified by its new bubble.' },
+            { name: 'ax-login', description: 'Sign a signed-out KakaoTalk back in from the keychain.' },
           ].map((item) => (
             <div
               key={item.name}

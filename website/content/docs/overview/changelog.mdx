@@ -6,8 +6,28 @@ description: Release notes for OpenKakao.
 # Changelog
 
 <Callout title="Currently: login-free send/read via local-send / ax-read">
-As of v1.4.0, [`local-send`/`ax-read`](/docs/cli/local-send) give a fully login-free path for both sending and reading real messages. Server login (`login --save`/`login --manual`) is still broken on recent KakaoTalk macOS builds ([#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)) — **do not repeatedly retry it from an unregistered device, that can get your account's sub-device login blocked.**
+[`local-send`/`ax-read`](/docs/cli/local-send) give a fully login-free path for both sending and reading real messages. Server login (`login --save`/`login --manual`) is still broken on recent KakaoTalk macOS builds ([#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)) — **do not repeatedly retry it from an unregistered device, that can get your account's sub-device login blocked.**
 </Callout>
+
+This page highlights major releases. Every release, including v1.5 through v1.10, is in [`CHANGELOG.md`](https://github.com/JungHoonGhae/openkakao-cli/blob/main/CHANGELOG.md).
+
+## v1.11.0
+
+**No login, 0.4 s per verified send, none of the known account-sanction triggers.**
+
+| Task (Mac Studio, KakaoTalk 26.8) | v1.9 | v1.11 |
+|---|---|---|
+| Read an open chat (`ax-read`) | 26.8 s | **0.2 s** |
+| Send, verified by its new bubble (`local-send`) | 44 s | **0.4 s** |
+| Find and open a closed chat (`--open-if-needed`) | 6.5 s (v1.10) | **3.2 s** (worst case measured) |
+| Touch ID for an allowlisted chat | every send | **none** |
+
+- **`--open-if-needed` uses KakaoTalk's own chat search** instead of naming every chat-list row, and still matches exact chat names. A missing chat is reported in 1.6 s instead of about 6 s.
+- **An allowlisted chat needs no per-send authentication.** A chat outside `[safety] allowed_send_chats` is flagged `⚠ NOT in [safety] allowed_send_chats` and needs device-owner authentication right before the commit.
+- **New `ax-login [--account <id>]`** signs a signed-out KakaoTalk back in from the login keychain item `openkakao.kakaotalk`. The password never appears in argv or output, and `login_rejected` is never retried.
+- **New `--pick <N>`** opens one of several chats that share a name, and always asks for device-owner authentication. **New `--discard-draft`** clears a composer draft after approval.
+- **`--json` failures carry `disposition: {delivery, retry}`**, so an agent can tell whether a repeat could send twice.
+- Fixed: KakaoTalk 26.8's read-only new-message preview bar was read as a composer draft and blocked sends with `composer_busy`.
 
 ## v1.4.0
 
