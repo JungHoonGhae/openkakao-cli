@@ -4457,9 +4457,10 @@ end run
             anyhow!("could not read the exact target's composer before the {noun} paste")
         })?;
         if !existing_draft.is_empty() {
-            anyhow::bail!(
-                "the exact target's composer already contains a draft; refusing to disturb it"
-            );
+            return Err(coded(
+                ErrorCode::ComposerBusy,
+                "the exact target's composer already contains a draft; refusing to disturb it",
+            ));
         }
         focus.before_raise()?;
         open_and_dismiss_file_picker(window, send_files)?;
@@ -4860,9 +4861,10 @@ end run
             )
         })?;
         if !existing_draft.is_empty() {
-            anyhow::bail!(
-                "the exact target's composer already contains a draft; refusing to overwrite or append to it"
-            );
+            return Err(coded(
+                ErrorCode::ComposerBusy,
+                "the exact target's composer already contains a draft; refusing to overwrite or append to it",
+            ));
         }
 
         let baseline = delivery_observations(&message_table)?;
