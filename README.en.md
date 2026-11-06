@@ -63,14 +63,14 @@ brew tap JungHoonGhae/openkakao
 brew trust --formula junghoonghae/openkakao/openkakao-cli
 brew install openkakao-cli
 
-# 1. First-run setup — checks Accessibility, sign-in and Spaces, writes the send
+# 1. First-run setup: checks Accessibility, sign-in and Spaces, writes the send
 #    allowlist, installs the agent skill
 openkakao-cli init                                                   # interactive
 openkakao-cli init --yes --allow-chat "your memo chat's display name" --skill claude   # scripted
 #    Only names you type or pass are allowlisted ([safety] allow_ax_send /
 #    allowed_send_chats in ~/.config/openkakao/config.toml). Safe to re-run.
 
-# 2. Send — no server contact; an open chat window is used without raising KakaoTalk
+# 2. Send (no server contact; an open chat window is used without raising KakaoTalk)
 openkakao-cli local-send "chat display name" "Hello from CLI!" --dry-run   # preview
 openkakao-cli local-send "chat display name" "Hello from CLI!" -y         # actually send
 openkakao-cli local-send-file "chat display name" ./report.docx --dry-run  # any file: docx, pdf, zip, ...
@@ -273,7 +273,7 @@ With `--json`, failures print `{"error": {"code", "message", "fix"}}` on stdout.
 | `chat_window_not_open` | No open window titled exactly like the chat | Open the chat window once, or pass `--open-if-needed` |
 | `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
 | `send_button_missing` | This build exposes no `전송` button | `--fallback-keys` |
-| `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc** — KakaoTalk closes its windows on Esc |
+| `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc**: KakaoTalk closes its windows on Esc |
 | `staging_conflict` | `~/Downloads` already has a different file with this name | Send it from the top level of Downloads, Desktop or Documents, or rename it |
 | `user_active` | You kept typing during a `--fallback-keys` raise | Retry when idle, or `--wait-idle 0` |
 | `delivery_uncertain` | The send may have happened but was not proven | Check KakaoTalk before retrying; never retry blindly |

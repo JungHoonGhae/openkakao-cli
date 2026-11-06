@@ -63,7 +63,7 @@ brew tap JungHoonGhae/openkakao
 brew trust --formula junghoonghae/openkakao/openkakao-cli
 brew install openkakao-cli
 
-# 1. 초기 설정 — 손쉬운 사용 권한·로그인·Space 점검, 전송 화이트리스트, 에이전트 스킬 설치
+# 1. 초기 설정: 손쉬운 사용 권한·로그인·Space 점검, 전송 화이트리스트, 에이전트 스킬 설치
 openkakao-cli init                                       # 대화형
 openkakao-cli init --yes --allow-chat "나와의 채팅에 표시되는 이름" --skill claude   # 스크립트용
 #    화이트리스트는 직접 입력한 이름만 등록됩니다(~/.config/openkakao/config.toml의

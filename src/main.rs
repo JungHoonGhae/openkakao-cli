@@ -75,19 +75,19 @@ struct Cli {
         long,
         global = true,
         value_name = "SECS",
-        help = "AX: keyboard/mouse idle seconds required before KakaoTalk may be raised (default 2, 0 disables)"
+        help = "AX: keyboard/mouse idle seconds required before a --fallback-keys route raises KakaoTalk (default 2, 0 disables)"
     )]
     wait_idle: Option<u64>,
     #[arg(
         long,
         global = true,
-        help = "AX: open a chat with no open window from the chat list (raises KakaoTalk briefly)"
+        help = "AX: open a chat with no open window from the chat list's context menu (focus-free; marks it read)"
     )]
     open_if_needed: bool,
     #[arg(
         long,
         global = true,
-        help = "AX: send text by raising KakaoTalk and pressing Return instead of its 전송 button"
+        help = "AX: use the older raise + keys routes (Return, clipboard ⌘V, row double-click) for builds without the AX buttons"
     )]
     fallback_keys: bool,
     #[command(subcommand)]
@@ -559,16 +559,21 @@ enum Commands {
     /// Send one file (any type, e.g. .docx/.pdf/.zip) via AX automation
     /// through the official KakaoTalk app
     #[command(
-        long_about = "Send one file via AX automation through the official KakaoTalk app, with no \
-                      server login.\n\nThe file must exist, be a non-empty regular file (symlinks \
-                      are resolved) and fit [ax] max_file_mb (default 300 MiB). It is staged as one \
-                      file URL on the clipboard, pasted into the exact chat window, and sent from \
-                      KakaoTalk's single-file preview after macOS device-owner authentication. \
-                      Delivery is verified by a new outgoing [파일]/[사진] bubble or the file name. \
-                      Requires allow_ax_send and an exact allowed_send_chats entry (not for --dry-run). \
-                      The clipboard is overwritten and KakaoTalk is raised briefly (after --wait-idle)."
+        long_about = "Send one file (any type) via AX automation through the official KakaoTalk app, \
+                      with no server login and without raising KakaoTalk.\n\nThe file must exist, be a \
+                      non-empty regular file (symlinks are resolved) with a UTF-8 path, and fit \
+                      [ax] max_file_mb (default 300 MiB). The open chat window's 파일전송 button, the \
+                      open panel's sidebar folder and file rows, 열기 and the preview's 1개 전송 are \
+                      all driven by Accessibility; the send happens only after macOS device-owner \
+                      authentication. A file outside the top level of Desktop/Documents/Downloads \
+                      is staged as a same-name hard link (or copy) in ~/Downloads and removed after \
+                      a verified send. Delivery is verified by a new outgoing row showing the file \
+                      name or [파일]/[사진]. Requires allow_ax_send and an exact allowed_send_chats \
+                      entry (not for --dry-run). --fallback-keys uses the older clipboard + ⌘V route, \
+                      which raises KakaoTalk briefly after --wait-idle and overwrites the clipboard."
     )]
     LocalSendFile {
+        /// Exact title of the open chat window (and allowlisted display name)
         chat_name: String,
         /// Path to the file to send
         file: String,
