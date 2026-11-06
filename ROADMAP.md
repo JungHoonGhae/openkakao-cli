@@ -52,9 +52,11 @@ or an indeterminate completion after Return may have been pressed become
 `uncertain` and are never retried automatically. A failure proven to happen
 before that commit point returns to `proposed` for another explicit review.
 Native AX verification authenticates KakaoTalk's bundle/team code signature,
-requires one unique exact-name row, refuses existing drafts, reads the selected
-row and composer value back before commit, and requires both a cleared composer
-and an additional exact-text outgoing message bubble afterward. A five-minute
+requires exactly one open chat window titled exactly like the target (or one
+unique exact-name chat-list row when `--open-if-needed` opens it), refuses
+existing drafts, reads the target window and composer value back before commit,
+and requires both a cleared composer and an additional exact-text outgoing
+message bubble afterward. A five-minute
 sending lease distinguishes a live concurrent execution from a crashed process,
 while conservative per-chat and global budgets limit damage even after explicit
 approval.
@@ -66,6 +68,98 @@ but are not runtime dependencies and are never part of approval or delivery.
 This improves delivery safety but cannot create an authoritative target
 identity: current KakaoTalk builds do not expose a usable chat id to the AX
 sender, so exact display-name allowlisting and ambiguity refusal remain required.
+
+## Focus-free AX automation (landed) and what is left
+
+Since the 2026-11 focus-free work, the default AX paths never raise KakaoTalk
+or post input events. Text is sent with `AXSelectedText` + `AXPress 전송`, files
+through the open panel by Accessibility alone, and closed chats are opened from
+the chat-list context menu (`채팅방 열기`). All of this was measured on
+KakaoTalk 26.9.0, macOS 26. Raise-and-key routes remain behind
+`--fallback-keys`, gated by an idle wait and a frontmost-app restore. Open
+follow-ups, all to be verified on a signed-in Mac before relying on them:
+
+- **Staged-file deletion timing.** A file outside Desktop/Documents/Downloads
+  is hard-linked (or copied) into `~/Downloads` and removed once the bubble is
+  verified. If KakaoTalk re-reads a large file by path after the bubble
+  appears, deleting early could break that upload. Measure a large upload
+  first; if needed, delete only once the bubble shows its final size.
+- **Open-panel view modes.** The file row is found in the list view (`목록
+  보기`). Icon or column view yields no list outline and the send refuses;
+  switching the view by AX, or using the `검색` field, is untested.
+- **Chat-list search.** The search `AXTextField` exists only after the 검색
+  button is pressed, and setting its `AXValue` does not re-filter. Filtering
+  by name would mean pressing 검색, inserting with `AXSelectedText`, reading the
+  rows, then clearing (`AXSelectedTextRange` + `AXSelectedText ""`). This would
+  reach chats that are not loaded in the list.
+- **Opening a 1:1 chat by URL.** `open -g "kakaotalk://friend?action=chat&user_id=<id>"`
+  (string found in the 26.8 binary) might open a closed 1:1 chat without
+  activation. `user_id` is not in the AX tree; it may come from `notif-watch`
+  payloads. No group-chat equivalent was found. Optional.
+- **Share extension** (`MacTalk Share.appex`, files ≤ 30) runs its own chat
+  picker in a separate process that takes focus, so it is not focus-free. It
+  is an alternative only if the open-panel route proves worse.
+- `--fallback-keys` overwrites the clipboard. Restoring the previous contents
+  needs every pasteboard type saved across processes; it is not done yet.
+- Multi-line text: `AXSelectedText` is expected to keep newlines. A read-back
+  mismatch fails before the commit and removes the inserted text.
+- Typing `@` in a group chat opens a member-suggestion `AXTable` inside the
+  chat window. Lookups take the message table before any insertion, but
+  `ax-read` on a window with a pending `@` draft could pick the wrong table.
+
+## Message actions on an open chat window (designed, not implemented)
+
+The measured building blocks: each bubble row is `AXRow > AXCell (AXShowMenu) >
+[AXStaticText time, AXImage, AXTextArea text (AXShowMenu)]`. `AXShowMenu` on
+the bubble's `AXTextArea` opens KakaoTalk's context menu without activating
+the app. The menu is found among the application's `AXMenu` children and
+closed with `AXCancel`. Items include 답장, 수정, 복사하기, 나에게서만 삭제
+(group chats add 모든 대화상대에게서 삭제 within the deletion window), 공지,
+공유. Menu discovery is flaky (found once, missed twice within 2.4 s while a
+menu was visibly open), so the same rules as `open_row_via_context_menu`
+apply: poll the app's and the element's `AXMenu` children with a bounded wait,
+do nothing else if the menu is not found, and never leave one open.
+
+Planned commands, all experimental and verified on the memo chat first, with
+the exact allowlist, `--dry-run` printing the targeted bubble, refusal when
+the text matches more than one bubble, and verification by re-reading rows:
+
+- `local-reply <chat> --to-last|--match "<text>" "<message>"`: press 답장, then
+  **verify the reply context before inserting any text**. A reply banner
+  quoting the original must appear outside the message table; otherwise cancel
+  and refuse. A measured run where the menu step silently failed sent a plain
+  message instead. Then use the `AXSelectedText` + `전송` path.
+- `local-edit <chat> --match "<old>" "<new>"`: press 수정, require the composer
+  to load exactly `<old>`, replace it via `AXSelectedTextRange` [0, len] +
+  `AXSelectedText`, commit, and verify the bubble now reads `<new>`. The commit
+  control in edit mode is not measured yet.
+- `local-delete <chat> --match "<text>" [--for-everyone]`: press the matching
+  삭제 item, confirm only a dialog whose buttons are recognized, and verify the
+  bubble is gone or marked deleted. This is irreversible, so own outgoing
+  bubbles only and device-owner authentication first.
+- `--mention "<name>"` for sends: insert `@` plus a partial name, find the
+  suggestion `AXTable` (not the message table), `AXPress` the row whose text
+  matches exactly, and verify a mention token is in the composer before adding
+  the rest. Only the table's appearance has been observed.
+
+## MCP server mode (designed, not implemented)
+
+`openkakao-cli mcp` would serve the Model Context Protocol over stdio so agents
+call typed tools instead of shelling out:
+
+- Tools: `list_open_chats` (open chat-window titles), `read_chat` (`ax-read`,
+  bounded `count`), `doctor` (the read-only AX checks), and `propose_send` /
+  `propose_file` (the `safe-send` outbox; these never send).
+- Sending stays human-gated. The server exposes no tool that commits a send by
+  itself. A proposal returns its intent id and 12-character approval code, and
+  a human approves in a terminal (`safe-send approve`) with device-owner
+  authentication. An optional `confirm_send` tool could do the same through MCP
+  elicitation, but only with the approval code typed by the human and the OS
+  authentication prompt.
+- The same config gates apply (`allow_ax_send`, exact `allowed_send_chats`,
+  `[ax]` focus policy), and tool errors carry the CLI's stable `code` and `fix`.
+- No new dependency is needed: JSON-RPC over stdio with `serde_json`, one
+  request at a time, and the AX calls run on the main thread.
 
 ## Sealed: local DB tailing (SQLCipher) — NO-GO on current builds
 
