@@ -33,7 +33,7 @@ export function Hero() {
 }
 
 export function CreateWorkflowAnimation(props: HTMLAttributes<HTMLDivElement>) {
-  const command = 'openkakao-cli login --save';
+  const command = 'openkakao-cli local-send "Me" "hi"';
   const tickTime = 100;
   const timeCommandEnter = command.length;
   const timeCommandRun = timeCommandEnter + 3;
@@ -66,15 +66,15 @@ export function CreateWorkflowAnimation(props: HTMLAttributes<HTMLDivElement>) {
           </span>
           {tick > timeCommandRun && (
             <Fragment>
-              <span className="text-fd-muted-foreground">Reading local KakaoTalk state...</span>
+              <span className="text-fd-muted-foreground">Finding the chat through Accessibility...</span>
               {tick > timeCommandRun + 1 && (
-                <span className="text-fd-muted-foreground">Extracting reusable credentials...</span>
+                <span className="text-fd-muted-foreground">Inserting the message into the composer...</span>
               )}
               {tick > timeCommandRun + 2 && (
-                <span className="text-fd-muted-foreground">Validating account session...</span>
+                <span className="text-fd-muted-foreground">Verifying the new bubble...</span>
               )}
               {tick > timeCommandRun + 3 && (
-                <span className="font-medium text-brand">Login saved successfully.</span>
+                <span className="font-medium text-brand">Delivered and verified in 0.4 s.</span>
               )}
             </Fragment>
           )}
@@ -203,8 +203,8 @@ function HeroPreviewPanel() {
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-white/50">Terminal</div>
             <pre className="overflow-x-auto font-mono text-sm text-white/80">
               <code>{`brew install openkakao-cli
-openkakao-cli login --save
-openkakao-cli loco-read <chat_id> -n 20 --json`}</code>
+openkakao-cli ax-read "Me" --json
+openkakao-cli local-send "Me" "hi"`}</code>
             </pre>
           </div>
         </div>
@@ -215,7 +215,7 @@ openkakao-cli loco-read <chat_id> -n 20 --json`}</code>
             On this page
           </div>
           <TocItem label="Introduction" active />
-          <TocItem label="Install and login" />
+          <TocItem label="Install and allowlist" />
           <TocItem label="Read chats" />
           <TocItem label="Watch events" />
           <TocItem label="Automation" />
