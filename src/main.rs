@@ -94,6 +94,12 @@ struct Cli {
     #[arg(
         long,
         global = true,
+        help = "AX: clear a draft left in the chat's composer before a text send (the draft is printed first)"
+    )]
+    discard_draft: bool,
+    #[arg(
+        long,
+        global = true,
         help = "AX: use the older raise + keys routes (Return, clipboard ⌘V, row double-click) for builds without the AX buttons"
     )]
     fallback_keys: bool,
@@ -887,6 +893,7 @@ fn run(cli: Cli) -> Result<()> {
         open_if_needed: cli.open_if_needed || config.ax.open_if_needed,
         fallback_keys: cli.fallback_keys,
         pick: cli.pick,
+        discard_draft: cli.discard_draft,
     });
     ax_send::set_allowed_send_chats(config.safety.allowed_send_chats.clone());
     set_auth_policy(AuthPolicy::from_config(&config.auth));

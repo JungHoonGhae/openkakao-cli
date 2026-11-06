@@ -87,11 +87,12 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 - **Open-panel view modes.** The file row is found in the list view (`목록
   보기`). Icon or column view yields no list outline and the send refuses;
   switching the view by AX, or using the `검색` field, is untested.
-- **Chat-list search.** The search `AXTextField` exists only after the 검색
-  button is pressed, and setting its `AXValue` does not re-filter. Filtering
-  by name would mean pressing 검색, inserting with `AXSelectedText`, reading the
-  rows, then clearing (`AXSelectedTextRange` + `AXSelectedText ""`). This would
-  reach chats that are not loaded in the list.
+- **Chat-list search (landed for `--open-if-needed`).** 검색 shows the field,
+  `AXSelectedText` filters (`AXValue` does not), and pressing 검색 again closes
+  the search, clears its term and restores the list in about 0.3 s (measured
+  on 26.8). Open: `ax-watch` and `doctor` still scan the full list, and a term
+  matching many member names (the account's own name matched 140 rows) still
+  costs about 10 ms per row.
 - **Opening a 1:1 chat by URL.** `open -g "kakaotalk://friend?action=chat&user_id=<id>"`
   (string found in the 26.8 binary) might open a closed 1:1 chat without
   activation. `user_id` is not in the AX tree; it may come from `notif-watch`

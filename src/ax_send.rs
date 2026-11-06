@@ -304,6 +304,8 @@ pub(crate) struct AxPolicy {
     pub fallback_keys: bool,
     /// `--pick N`: which exact-name chat-list row to open when several match.
     pub pick: Option<usize>,
+    /// `--discard-draft`: clear (and print) a composer draft before a text send.
+    pub discard_draft: bool,
 }
 
 pub(crate) const DEFAULT_WAIT_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -315,6 +317,7 @@ impl Default for AxPolicy {
             open_if_needed: false,
             fallback_keys: false,
             pick: None,
+            discard_draft: false,
         }
     }
 }
@@ -2753,6 +2756,107 @@ function run(argv) {
         Ok(snap)
     }
 
+    /// KakaoTalk's chat-list search while openkakao uses it. Dropping it
+    /// presses 검색 again, which closes the search, clears its term and
+    /// restores the full list (measured on 26.8: 288 ms back to 670 rows).
+    struct ChatSearch {
+        window: AXUIElement,
+    }
+
+    impl Drop for ChatSearch {
+        fn drop(&mut self) {
+            if let Some(button) = search_button(&self.window) {
+                let _ = button.perform_action(&CFString::new(kAXPressAction));
+            }
+        }
+    }
+
+    fn search_button(window: &AXUIElement) -> Option<AXUIElement> {
+        let snap = snapshot_shallow(window).ok()?;
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        buttons
+            .into_iter()
+            .find(|button| button.description.as_deref() == Some("검색"))
+            .map(|button| button.element.clone())
+    }
+
+    /// Chat-list rows with the name each one shows.
+    type ChatRows = Vec<(AXUIElement, Option<String>)>;
+
+    fn table_row_count(table: &AXUIElement) -> Option<isize> {
+        let rows: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXRows"));
+        let value = table.attribute(&rows).ok()?;
+        Some(value.downcast::<CFArray>()?.len())
+    }
+
+    /// The chat-list rows KakaoTalk's search leaves for `name`, read one by one
+    /// (a handful instead of every loaded row: ~10 ms instead of ~5.6 s for 670
+    /// rows on 26.8). 검색 is pressed, the name is inserted with
+    /// `AXSelectedText` (setting `AXValue` does not filter), and the rows are
+    /// read once their count changed and settled. The search also matches
+    /// member names, so callers still match exact chat names. `None` (and the
+    /// search closed again) whenever any step does not behave as measured, or
+    /// when the search is already open (the user's own), so the caller can
+    /// scan the full list instead.
+    fn filter_chat_list(
+        window: &AXUIElement,
+        snap: &AxNode,
+        name: &str,
+    ) -> Option<(ChatSearch, ChatRows)> {
+        if snap.find_first("AXTextField").is_some() {
+            return None;
+        }
+        let table = |snap: &AxNode| snap.find_first("AXTable").map(|t| t.element.clone());
+        let before = table_row_count(&table(snap)?)?;
+        search_button(window)?
+            .perform_action(&CFString::new(kAXPressAction))
+            .ok()?;
+        let search = ChatSearch {
+            window: window.clone(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let field = loop {
+            if let Some(field) = snapshot_shallow(window)
+                .ok()
+                .and_then(|snap| snap.find_first("AXTextField").map(|f| f.element.clone()))
+            {
+                break field;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            sleep(Duration::from_millis(50));
+        };
+        let focused: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXFocused"));
+        let selected_text: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXSelectedText"));
+        field
+            .set_attribute(&focused, CFBoolean::true_value().as_CFType())
+            .ok()?;
+        field
+            .set_attribute(&selected_text, CFString::new(name).as_CFType())
+            .ok()?;
+        let filtered = snapshot_shallow(window)
+            .ok()
+            .and_then(|snap| table(&snap))?;
+        // Settled: the count left the full list's and read the same twice.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = None;
+        loop {
+            sleep(Duration::from_millis(100));
+            let count = table_row_count(&filtered)?;
+            if count != before && last == Some(count) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            last = Some(count);
+        }
+        let rows = chat_list_rows(&filtered).ok()?;
+        Some((search, rows))
+    }
+
     /// The text currently typed into the main window's chat-list search field,
     /// if any. While it is set KakaoTalk only lists matching rows.
     fn search_field_term(main_snapshot: &AxNode) -> Option<String> {
@@ -2808,7 +2912,17 @@ function run(argv) {
                 "could not find the chat list in KakaoTalk's main window",
             )
         })?;
-        let rows = chat_list_rows(&table.element)?;
+        // KakaoTalk's own search narrows the list to a handful of rows (and
+        // reaches chats that are not loaded); without it every loaded row is
+        // named one AX call at a time. `search` closes it when this returns,
+        // after the row was opened (closing re-creates the rows).
+        let (rows, search) = match filter_chat_list(&main_window, &snap, chat_display_name) {
+            Some((search, rows)) => {
+                trace(started, "chat list filtered by KakaoTalk search");
+                (rows, Some(search))
+            }
+            None => (chat_list_rows(&table.element)?, None),
+        };
 
         // Match the row's first AXStaticText (the chat name) exactly, never as
         // a substring, and refuse duplicates: there is no chat id to
@@ -2822,6 +2936,13 @@ function run(argv) {
                         ErrorCode::ChatListFiltered,
                         format!(
                             "chat '{chat_display_name}' is not in KakaoTalk's chat list, which is filtered by the search term '{term}'"
+                        ),
+                    ),
+                    None if search.is_some() => coded(
+                        ErrorCode::ChatNotFound,
+                        format!(
+                            "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}' ({} rows matched the term)",
+                            rows.len()
                         ),
                     ),
                     None => coded(
@@ -3328,19 +3449,20 @@ end run
     /// Search a single root (a window, or the whole app as a fallback) for the
     /// message composer: an `AXScrollArea` that wraps an `AXTextArea` but no
     /// `AXTable` (which would make it the message list instead).
+    /// The composer: the editable text area outside the message list. A
+    /// read-only one never counts: KakaoTalk 26.8 shows the newest incoming
+    /// message ("이모티콘을 보냈습니다.") in a 16 px text area above the
+    /// composer while the history is scrolled up, which read as a draft.
     fn find_input_field(snap: &AxNode) -> Option<AXUIElement> {
         let mut scroll_areas = Vec::new();
         snap.find_all("AXScrollArea", &mut scroll_areas);
-
-        for area in scroll_areas {
-            if area.find_first("AXTable").is_some() {
-                continue; // this scroll area is the message list, not the composer
-            }
-            if let Some(field) = area.find_first("AXTextArea") {
-                return Some(field.element.clone());
-            }
-        }
-        None
+        let value: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXValue"));
+        scroll_areas
+            .into_iter()
+            .filter(|area| area.find_first("AXTable").is_none())
+            .filter_map(|area| area.find_first("AXTextArea"))
+            .find(|field| field.element.is_settable(&value).unwrap_or(false))
+            .map(|field| field.element.clone())
     }
 
     fn find_file_picker_sheet(window: &AXUIElement) -> Result<Option<AXUIElement>> {
@@ -4860,12 +4982,21 @@ end run
                 "could not read the exact target's composer before commit; refusing to type blindly"
             )
         })?;
-        if !existing_draft.is_empty() {
-            return Err(coded(
-                ErrorCode::ComposerBusy,
-                "the exact target's composer already contains a draft; refusing to overwrite or append to it",
-            ));
-        }
+        // A draft is cleared only with --discard-draft, and only after the
+        // approval below, so a declined prompt leaves it untouched.
+        let discard = match (existing_draft.is_empty(), super::policy().discard_draft) {
+            (true, _) => None,
+            (false, true) => Some(existing_draft),
+            (false, false) => {
+                return Err(coded(
+                    ErrorCode::ComposerBusy,
+                    format!(
+                        "the exact target's composer already holds a {}-character draft; refusing to overwrite or append to it (--discard-draft clears it first and prints it)",
+                        existing_draft.chars().count()
+                    ),
+                ));
+            }
+        };
 
         let baseline = delivery_observations(&message_table)?;
         trace(started, "delivery baseline read");
@@ -4878,6 +5009,24 @@ end run
         // happens immediately before the composer is changed.
         focus.watch();
         require_send_approval(chat_display_name, "message to")?;
+        if let Some(draft) = discard {
+            // Printed before it is cleared, so the text is never lost.
+            eprintln!(
+                "--discard-draft: clearing this draft from '{}': {}",
+                crate::util::escape_terminal_text(chat_display_name),
+                serde_json::to_string(&crate::util::escape_terminal_text(&draft))
+                    .unwrap_or_default()
+            );
+            field
+                .set_value(CFString::new("").as_CFType())
+                .map_err(|error| anyhow!("could not clear the draft: {error:?}"))?;
+            if !wait_for_composer_value(&field, "") {
+                return Err(coded(
+                    ErrorCode::ComposerBusy,
+                    "the draft did not clear, so nothing was inserted or sent",
+                ));
+            }
+        }
 
         let commit_note = match &send_button {
             Some(button) => {
@@ -5889,10 +6038,17 @@ end run
         checks.push(
             match attr_as_string(&elements.input_field, "AXValue").as_deref() {
                 Some("") => check("Composer", Pass, "found and empty", None),
-                Some(_) => check(
+                Some(draft) => check(
                     "Composer",
                     Warn,
-                    "holds a draft; sends refuse to touch it",
+                    format!(
+                        "holds a {}-character draft ({}); sends refuse to touch it unless --discard-draft",
+                        draft.chars().count(),
+                        serde_json::to_string(&crate::util::escape_terminal_text(
+                            &crate::util::truncate(draft, 20)
+                        ))
+                        .unwrap_or_default()
+                    ),
                     None,
                 ),
                 None => check("Composer", Fail, "found but unreadable", None),
