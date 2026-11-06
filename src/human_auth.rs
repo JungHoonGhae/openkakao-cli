@@ -5,8 +5,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-/// Upper bound for `[safety] device_owner_auth_grace_secs` (one day).
-pub const MAX_DEVICE_OWNER_AUTH_GRACE_SECS: u64 = 86_400;
+/// Upper bound for `[safety] device_owner_auth_grace_secs` (15 minutes). The
+/// stamp below is a file the account can write, so while the window is open
+/// any local process can extend it: the window turns the OS-enforced presence
+/// check into trust of the Mac's local processes, hence the short cap.
+pub const MAX_DEVICE_OWNER_AUTH_GRACE_SECS: u64 = 900;
 
 // ponytail: one process-wide value set once from the loaded config, so the
 // four native send paths keep calling `require_device_owner_auth(reason)`.

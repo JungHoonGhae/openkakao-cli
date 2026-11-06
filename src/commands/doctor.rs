@@ -298,9 +298,13 @@ pub fn cmd_doctor(
     checks.extend(ax_checks(chat));
     checks.push(Check {
         name: "AX send gate".into(),
-        status: if config.safety.allow_ax_send && !config.safety.allowed_send_chats.is_empty() {
+        status: if config.safety.allow_ax_send
+            && !config.safety.allowed_send_chats.is_empty()
+            && config.safety.device_owner_auth_grace_secs == 0
+        {
             CheckStatus::Ok
         } else {
+            // A grace window lets local processes send without a prompt.
             CheckStatus::Warn
         },
         detail: {
@@ -318,8 +322,16 @@ pub fn cmd_doctor(
             }
             detail
         },
-        fix: (!config.safety.allow_ax_send || config.safety.allowed_send_chats.is_empty())
-            .then(|| "openkakao-cli init --allow-chat \"<exact chat name>\"".to_string()),
+        fix: if !config.safety.allow_ax_send || config.safety.allowed_send_chats.is_empty() {
+            Some("openkakao-cli init --allow-chat \"<exact chat name>\"".to_string())
+        } else if config.safety.device_owner_auth_grace_secs > 0 {
+            Some(
+                "device_owner_auth_grace_secs is on: within the window any local process can send to allowlisted chats without a prompt. Set it to 0 unless every process on this Mac is yours."
+                    .to_string(),
+            )
+        } else {
+            None
+        },
         ..Default::default()
     });
     checks.extend(homebrew_check());

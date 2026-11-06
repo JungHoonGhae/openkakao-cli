@@ -94,8 +94,10 @@ pub struct SafetyConfig {
     /// Seconds one successful macOS device-owner authentication (Touch ID or
     /// password) stays valid for later `local-send*`, `local-reply`,
     /// `local-edit` and `safe-send approve` runs, sudo-style. 0 (default)
-    /// asks every time; values above 86400 are clamped. Within the window
-    /// anyone with your shell can send to allowlisted chats, so keep it short.
+    /// asks every time; values above 900 are clamped. The approval time is a
+    /// file your account can write, so within the window any local process
+    /// (a shell, an agent) can send to allowlisted chats or extend the window.
+    /// Enable it only on a Mac where every local process is yours.
     #[serde(default)]
     pub device_owner_auth_grace_secs: u64,
 }
