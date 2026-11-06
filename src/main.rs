@@ -87,6 +87,19 @@ struct Cli {
     #[arg(
         long,
         global = true,
+        value_name = "N",
+        help = "AX: with --open-if-needed, open the Nth (top to bottom) of several chats with the exact same name"
+    )]
+    pick: Option<usize>,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: clear a draft left in the chat's composer before a text send (the draft is printed first)"
+    )]
+    discard_draft: bool,
+    #[arg(
+        long,
+        global = true,
         help = "AX: use the older raise + keys routes (Return, clipboard ⌘V, row double-click) for builds without the AX buttons"
     )]
     fallback_keys: bool,
@@ -564,12 +577,13 @@ enum Commands {
                       non-empty regular file (symlinks are resolved) with a UTF-8 path, and fit \
                       [ax] max_file_mb (default 300 MiB). The open chat window's 파일전송 button, the \
                       open panel's sidebar folder and file rows, 열기 and the preview's 1개 전송 are \
-                      all driven by Accessibility; the send happens only after macOS device-owner \
-                      authentication. A file outside the top level of Desktop/Documents/Downloads \
+                      all driven by Accessibility. A chat outside allowed_send_chats is flagged and \
+                      needs macOS device-owner authentication before the send; an allowlisted one \
+                      does not. A file outside the top level of Desktop/Documents/Downloads \
                       is staged as a same-name hard link (or copy) in ~/Downloads and removed after \
                       a verified send. Delivery is verified by a new outgoing row showing the file \
-                      name or [파일]/[사진]. Requires allow_ax_send and an exact allowed_send_chats \
-                      entry (not for --dry-run). --fallback-keys uses the older clipboard + ⌘V route, \
+                      name or [파일]/[사진]. Requires allow_ax_send (not for --dry-run). \
+                      --fallback-keys uses the older clipboard + ⌘V route, \
                       which raises KakaoTalk briefly after --wait-idle and overwrites the clipboard."
     )]
     LocalSendFile {
@@ -589,7 +603,7 @@ enum Commands {
                       text bubble (--to-last) or the one bubble whose whole text equals --match \
                       (two matches refuse). Reply mode must be confirmed (composer and banner) before \
                       any text is inserted. --dry-run reads the chat and shows the target only. Same \
-                      allow_ax_send, exact allowlist and device-owner authentication as local-send."
+                      allow_ax_send and allowlist/authentication rules as local-send."
     )]
     LocalReply {
         /// Exact title of the open chat window (and allowlisted display name)
@@ -646,6 +660,22 @@ enum Commands {
     SafeSend {
         #[command(subcommand)]
         action: SafeSendAction,
+    },
+    /// Sign a signed-out KakaoTalk back in from the login keychain (AX, no server login)
+    #[command(
+        long_about = "Sign a signed-out KakaoTalk (for example after a login on another device) back \
+                      in by Accessibility. The password is read from the login keychain item \
+                      `openkakao.kakaotalk`, which you save once with `security add-generic-password \
+                      -s openkakao.kakaotalk -a <account> -w`; it never appears in argv or output. \
+                      The KakaoTalk process must carry Kakao's code signature. A logout notice or an \
+                      abandoned QR page is dismissed only when recognized. A rejected password is \
+                      reported (login_rejected) and never retried. A device check or unknown dialog \
+                      is left to you (login_needs_human)."
+    )]
+    AxLogin {
+        /// KakaoTalk login id (usually the account email); defaults to [ax] login_account
+        #[arg(long)]
+        account: Option<String>,
     },
     /// Read recent messages via AX automation (no server contact, no local
     /// DB access — scrapes the open KakaoTalk chat window directly)
@@ -801,30 +831,19 @@ fn require_ax_send(config: &config::OpenKakaoConfig) -> Result<()> {
     Ok(())
 }
 
-/// `local-send` / `local-send-photo` have no chat-id to cross-check against
-/// (the local DB they would normally verify with is unreadable on current
-/// KakaoTalk builds), so an exact-match allowlist in config is the only guard
-/// against typos or substring collisions sending to the wrong chat.
-fn require_allowed_send_chat(config: &config::OpenKakaoConfig, chat_name: &str) -> Result<()> {
-    if !config
-        .safety
-        .allowed_send_chats
-        .iter()
-        .any(|c| c == chat_name)
-    {
-        return Err(error::coded(
-            error::ErrorCode::ChatNotAllowed,
-            format!(
-                "chat \"{chat_name}\" is not in the local-send allowlist.\n\n\
-                 local-send / local-send-file / local-send-photo match chats by display-name\n\
-                 text scraped from the KakaoTalk UI, not a chat-id, so an explicit allowlist is\n\
-                 required to avoid sending to the wrong chat. Add to ~/.config/openkakao/config.toml:\n\n\
-                 [safety]\n\
-                 allowed_send_chats = [\"{chat_name}\"]"
-            ),
-        ));
+/// AX writes match chats by display name, not a chat id (the local DB that
+/// could cross-check is unreadable on current KakaoTalk builds). An exact
+/// `allowed_send_chats` entry is the human's standing approval; any other
+/// target is flagged here and must pass device-owner authentication in the
+/// AX transport (`ax_send::require_send_approval`).
+fn warn_if_not_allowlisted(config: &config::OpenKakaoConfig, chat_name: &str) {
+    if !ax_send::is_allowlisted(&config.safety.allowed_send_chats, chat_name) {
+        eprintln!(
+            "⚠ \"{}\" is NOT in [safety] allowed_send_chats: macOS device-owner authentication \
+             (Touch ID or login password) is required. Add the exact name there to send without it.",
+            util::escape_terminal_text(chat_name)
+        );
     }
-    Ok(())
 }
 
 /// Whether this command can benefit from the warning about broken server-login
@@ -847,6 +866,7 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalEdit { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
+            | Commands::AxLogin { .. }
             | Commands::AxRead { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
@@ -889,7 +909,10 @@ fn run(cli: Cli) -> Result<()> {
         ),
         open_if_needed: cli.open_if_needed || config.ax.open_if_needed,
         fallback_keys: cli.fallback_keys,
+        pick: cli.pick,
+        discard_draft: cli.discard_draft,
     });
+    ax_send::set_allowed_send_chats(config.safety.allowed_send_chats.clone());
     set_auth_policy(AuthPolicy::from_config(&config.auth));
     let json = cli.json;
     let unattended = cli.unattended || config.mode.unattended;
@@ -1526,7 +1549,7 @@ fn run(cli: Cli) -> Result<()> {
             let msg = format_outgoing_message(&message, no_prefix);
             if !dry_run {
                 require_ax_send(&config)?;
-                require_allowed_send_chat(&config, &chat_name)?;
+                warn_if_not_allowlisted(&config, &chat_name);
             }
             commands::local_send::cmd_local_send(commands::local_send::LocalSendOptions {
                 chat_name,
@@ -1544,7 +1567,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             if !dry_run {
                 require_ax_send(&config)?;
-                require_allowed_send_chat(&config, &chat_name)?;
+                warn_if_not_allowlisted(&config, &chat_name);
             }
             commands::local_send_file::cmd_local_send_file(
                 commands::local_send_file::LocalSendFileOptions {
@@ -1567,7 +1590,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             if !dry_run {
                 require_ax_send(&config)?;
-                require_allowed_send_chat(&config, &chat_name)?;
+                warn_if_not_allowlisted(&config, &chat_name);
             }
             let target = match match_text {
                 Some(text) if !to_last => ax_send::BubbleTarget::Text(text),
@@ -1593,7 +1616,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             if !dry_run {
                 require_ax_send(&config)?;
-                require_allowed_send_chat(&config, &chat_name)?;
+                warn_if_not_allowlisted(&config, &chat_name);
             }
             commands::local_actions::cmd_local_edit(commands::local_actions::BubbleActionOptions {
                 chat_name,
@@ -1612,7 +1635,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             if !dry_run {
                 require_ax_send(&config)?;
-                require_allowed_send_chat(&config, &chat_name)?;
+                warn_if_not_allowlisted(&config, &chat_name);
             }
             commands::local_send_photo::cmd_local_send_photo(
                 commands::local_send_photo::LocalSendPhotoOptions {
@@ -1655,6 +1678,10 @@ fn run(cli: Cli) -> Result<()> {
                 commands::safe_send::cmd_cancel(&intent_id, yes, json)?
             }
         },
+        Commands::AxLogin { account } => commands::ax_login::cmd_ax_login(
+            account.or_else(|| config.ax.login_account.clone()),
+            json,
+        )?,
         Commands::AxRead { chat_name, count } => {
             commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
                 chat_name,

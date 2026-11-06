@@ -84,6 +84,25 @@ pub(crate) fn match_chat_row(row_names: &[Option<String>], target: &str) -> Chat
     }
 }
 
+/// The row a human chose with `--pick N` (1-based, top to bottom) among the
+/// rows named exactly `target`; `None` when nothing (valid) was picked.
+// ponytail: the pick is list order at run time, and a new message can reorder
+// unpinned rows between the listing and the pick; bind it to the row's
+// (time, preview) fingerprint if that ever bites.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn picked_row(
+    row_names: &[Option<String>],
+    target: &str,
+    pick: Option<usize>,
+) -> Option<usize> {
+    let mut matches = row_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_deref() == Some(target))
+        .map(|(index, _)| index);
+    matches.nth(pick?.checked_sub(1)?)
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn has_new_exact_outgoing_message(
     before: &[DeliveryObservation],
@@ -97,14 +116,29 @@ pub(crate) fn has_new_exact_outgoing_message(
     after_count > before_count
 }
 
+/// A cleared composer plus a new outgoing exact-text bubble. With the
+/// baseline's newest row found again (`appended_start`, see
+/// [`appended_rows_start`]), one such bubble among the rows appended after it
+/// is enough, so an older identical bubble that scrolls out of the observed
+/// tail cannot turn a real send into `delivery_uncertain`. Without the anchor
+/// the counting rule applies.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn is_verified_delivery(
     before: &[DeliveryObservation],
     after: &[DeliveryObservation],
+    appended_start: Option<usize>,
     target: &str,
     composer_value: Option<&str>,
 ) -> bool {
-    composer_value == Some("") && has_new_exact_outgoing_message(before, after, target)
+    composer_value == Some("")
+        && match appended_start {
+            Some(start) => after
+                .get(start..)
+                .unwrap_or_default()
+                .iter()
+                .any(|row| row.outgoing && row.text == target),
+            None => has_new_exact_outgoing_message(before, after, target),
+        }
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -268,6 +302,10 @@ pub(crate) struct AxPolicy {
     pub open_if_needed: bool,
     /// Commit text with the raise + Return path instead of the `전송` button.
     pub fallback_keys: bool,
+    /// `--pick N`: which exact-name chat-list row to open when several match.
+    pub pick: Option<usize>,
+    /// `--discard-draft`: clear (and print) a composer draft before a text send.
+    pub discard_draft: bool,
 }
 
 pub(crate) const DEFAULT_WAIT_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -278,8 +316,45 @@ impl Default for AxPolicy {
             wait_idle: DEFAULT_WAIT_IDLE,
             open_if_needed: false,
             fallback_keys: false,
+            pick: None,
+            discard_draft: false,
         }
     }
+}
+
+/// `[safety] allowed_send_chats`, set once by `main`. Listing a chat there is
+/// the human's standing approval, so AX writes to it skip the per-send
+/// device-owner authentication; any other exact name still needs it. Unset
+/// (no config loaded) means every target needs it.
+static ALLOWED_SEND_CHATS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+pub(crate) fn set_allowed_send_chats(chats: Vec<String>) {
+    let _ = ALLOWED_SEND_CHATS.set(chats);
+}
+
+/// Exact display-name match only: `허용된` never stands for `허용된 방`.
+pub(crate) fn is_allowlisted(allowed: &[String], chat: &str) -> bool {
+    allowed.iter().any(|name| name == chat)
+}
+
+/// Why an AX write needs device-owner authentication, or `None` when the
+/// allowlist already stands for the human's approval. A `--pick` among
+/// same-name chats always needs it: the name-based allowlist covers every
+/// chat with that name, not the one picked.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn auth_reason(allowlisted: bool, picked_row: Option<&str>) -> Option<String> {
+    match (picked_row, allowlisted) {
+        (Some(row), _) => Some(format!("picked among same-name chats: {row}")),
+        (None, false) => Some("which is NOT in allowed_send_chats".to_string()),
+        (None, true) => None,
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn needs_device_owner_auth(chat: &str) -> bool {
+    !ALLOWED_SEND_CHATS
+        .get()
+        .is_some_and(|allowed| is_allowlisted(allowed, chat))
 }
 
 static AX_POLICY: std::sync::OnceLock<AxPolicy> = std::sync::OnceLock::new();
@@ -373,6 +448,41 @@ fn is_clock_label(value: &str) -> bool {
 
 /// The single window a signed-out KakaoTalk shows (it reuses the
 /// `Main Window` identifier). Only `로그인` is verified on 26.9.
+/// What the 로그인 window shows, from its texts (KakaoTalk 26.8, Korean UI).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoginScreen {
+    /// The account/password form.
+    Form,
+    /// The QR code page, live or expired.
+    Qr,
+    /// "카카오계정 또는 비밀번호를 다시 확인해 주세요."
+    Rejected,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn login_screen(texts: &[String]) -> LoginScreen {
+    let shows = |needle: &str| texts.iter().any(|text| text.contains(needle));
+    if shows("다시 확인해 주세요") {
+        LoginScreen::Rejected
+    } else if shows("QR코드로 로그인할 수 있습니다") || shows("인증 시간이 만료")
+    {
+        LoginScreen::Qr
+    } else {
+        LoginScreen::Form
+    }
+}
+
+/// Sheets on the 로그인 window that `ax-login` may confirm: the logout notice
+/// ("…로그아웃 되었습니다.") and leaving the QR page ("인증 진행을 중단하시겠습니까?").
+/// Any other sheet is left to a human.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn is_dismissable_login_sheet(texts: &[String]) -> bool {
+    texts
+        .iter()
+        .any(|text| text.contains("로그아웃 되었습니다") || text.contains("인증 진행을 중단"))
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_login_window_title(title: &str) -> bool {
     matches!(title.trim(), "로그인" | "Login" | "Log In")
@@ -775,6 +885,29 @@ mod policy_tests {
 
     #[test]
     fn login_window_titles_are_recognized_exactly() {
+        let texts = |all: &[&str]| all.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            login_screen(&texts(&[
+                "카카오계정 또는 비밀번호를 다시 확인해 주세요.",
+                "또는"
+            ])),
+            LoginScreen::Rejected
+        );
+        assert_eq!(
+            login_screen(&texts(&["인증 시간이 만료되었습니다.", "00:00"])),
+            LoginScreen::Qr
+        );
+        assert_eq!(login_screen(&texts(&["또는"])), LoginScreen::Form);
+        assert!(is_dismissable_login_sheet(&texts(&[
+            "로그아웃 되었습니다.",
+            "다른 기기에서 로그인해 로그아웃 되었습니다."
+        ])));
+        assert!(is_dismissable_login_sheet(&texts(&[
+            "인증 진행을 중단하시겠습니까?"
+        ])));
+        assert!(!is_dismissable_login_sheet(&texts(&[
+            "계정을 삭제하시겠습니까?"
+        ])));
         assert!(is_login_window_title("로그인"));
         assert!(is_login_window_title(" 로그인 "));
         assert!(!is_login_window_title("카카오톡"));
@@ -1182,6 +1315,42 @@ mod policy_tests {
     }
 
     #[test]
+    fn pick_chooses_among_exact_duplicates_only() {
+        let names = [
+            Some("귀몬❤️".to_string()),
+            Some("귀몬".to_string()),
+            None,
+            Some("귀몬❤️".to_string()),
+        ];
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(1)), Some(0));
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(2)), Some(3));
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(3)), None);
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(0)), None);
+        assert_eq!(picked_row(&names, "귀몬❤️", None), None);
+    }
+
+    #[test]
+    fn only_an_exact_allowlisted_name_skips_authentication() {
+        let allowed = vec!["허용된 방".to_string()];
+        assert!(is_allowlisted(&allowed, "허용된 방"));
+        assert!(!is_allowlisted(&allowed, "허용된"));
+        assert!(!is_allowlisted(&allowed, "허용된 방 "));
+        assert!(!is_allowlisted(&[], "허용된 방"));
+        // No allowlist loaded: every target authenticates.
+        assert!(needs_device_owner_auth("허용된 방"));
+    }
+
+    #[test]
+    fn a_pick_among_duplicates_always_authenticates() {
+        assert_eq!(auth_reason(true, None), None);
+        assert!(auth_reason(false, None).unwrap().contains("NOT in"));
+        // Allowlisted by name, yet the name covers several chats.
+        assert!(auth_reason(true, Some("오후 5:30 · 📌 pinned"))
+            .unwrap()
+            .contains("📌 pinned"));
+    }
+
+    #[test]
     fn appended_rows_are_found_by_identity() {
         let same = |a: &u32, b: &u32| a == b;
         assert_eq!(
@@ -1354,16 +1523,69 @@ mod match_tests {
         assert!(!is_verified_delivery(
             &before,
             &after,
+            None,
             "new message",
             Some("new message")
         ));
         assert!(is_verified_delivery(
             &before,
             &after,
+            None,
             "new message",
             Some("")
         ));
-        assert!(!is_verified_delivery(&before, &after, "new message", None));
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            None,
+            "new message",
+            None
+        ));
+    }
+
+    #[test]
+    fn anchored_delivery_survives_a_repeat_scrolling_out_of_the_tail() {
+        let ok = |outgoing| DeliveryObservation {
+            text: "ok".to_string(),
+            outgoing,
+        };
+        // A full tail of earlier "ok"s; the send pushes the oldest one out,
+        // so the count of outgoing "ok" rows stays the same.
+        let before = vec![ok(true), ok(true), ok(true)];
+        let after = vec![ok(true), ok(true), ok(true)];
+        assert!(!is_verified_delivery(&before, &after, None, "ok", Some("")));
+        // The baseline's newest row was found again at index 1: one row appended.
+        assert!(is_verified_delivery(
+            &before,
+            &after,
+            Some(2),
+            "ok",
+            Some("")
+        ));
+        // Nothing appended, or only an incoming copy, proves nothing.
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            Some(3),
+            "ok",
+            Some("")
+        ));
+        let incoming = vec![ok(true), ok(true), ok(false)];
+        assert!(!is_verified_delivery(
+            &before,
+            &incoming,
+            Some(2),
+            "ok",
+            Some("")
+        ));
+        // The composer must still be cleared.
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            Some(2),
+            "ok",
+            Some("ok")
+        ));
     }
 
     #[test]
@@ -2592,6 +2814,107 @@ function run(argv) {
         Ok(snap)
     }
 
+    /// KakaoTalk's chat-list search while openkakao uses it. Dropping it
+    /// presses 검색 again, which closes the search, clears its term and
+    /// restores the full list (measured on 26.8: 288 ms back to 670 rows).
+    struct ChatSearch {
+        window: AXUIElement,
+    }
+
+    impl Drop for ChatSearch {
+        fn drop(&mut self) {
+            if let Some(button) = search_button(&self.window) {
+                let _ = button.perform_action(&CFString::new(kAXPressAction));
+            }
+        }
+    }
+
+    fn search_button(window: &AXUIElement) -> Option<AXUIElement> {
+        let snap = snapshot_shallow(window).ok()?;
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        buttons
+            .into_iter()
+            .find(|button| button.description.as_deref() == Some("검색"))
+            .map(|button| button.element.clone())
+    }
+
+    /// Chat-list rows with the name each one shows.
+    type ChatRows = Vec<(AXUIElement, Option<String>)>;
+
+    fn table_row_count(table: &AXUIElement) -> Option<isize> {
+        let rows: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXRows"));
+        let value = table.attribute(&rows).ok()?;
+        Some(value.downcast::<CFArray>()?.len())
+    }
+
+    /// The chat-list rows KakaoTalk's search leaves for `name`, read one by one
+    /// (a handful instead of every loaded row: ~10 ms instead of ~5.6 s for 670
+    /// rows on 26.8). 검색 is pressed, the name is inserted with
+    /// `AXSelectedText` (setting `AXValue` does not filter), and the rows are
+    /// read once their count changed and settled. The search also matches
+    /// member names, so callers still match exact chat names. `None` (and the
+    /// search closed again) whenever any step does not behave as measured, or
+    /// when the search is already open (the user's own), so the caller can
+    /// scan the full list instead.
+    fn filter_chat_list(
+        window: &AXUIElement,
+        snap: &AxNode,
+        name: &str,
+    ) -> Option<(ChatSearch, ChatRows)> {
+        if snap.find_first("AXTextField").is_some() {
+            return None;
+        }
+        let table = |snap: &AxNode| snap.find_first("AXTable").map(|t| t.element.clone());
+        let before = table_row_count(&table(snap)?)?;
+        search_button(window)?
+            .perform_action(&CFString::new(kAXPressAction))
+            .ok()?;
+        let search = ChatSearch {
+            window: window.clone(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let field = loop {
+            if let Some(field) = snapshot_shallow(window)
+                .ok()
+                .and_then(|snap| snap.find_first("AXTextField").map(|f| f.element.clone()))
+            {
+                break field;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            sleep(Duration::from_millis(50));
+        };
+        let focused: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXFocused"));
+        let selected_text: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXSelectedText"));
+        field
+            .set_attribute(&focused, CFBoolean::true_value().as_CFType())
+            .ok()?;
+        field
+            .set_attribute(&selected_text, CFString::new(name).as_CFType())
+            .ok()?;
+        let filtered = snapshot_shallow(window)
+            .ok()
+            .and_then(|snap| table(&snap))?;
+        // Settled: the count left the full list's and read the same twice.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = None;
+        loop {
+            sleep(Duration::from_millis(100));
+            let count = table_row_count(&filtered)?;
+            if count != before && last == Some(count) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            last = Some(count);
+        }
+        let rows = chat_list_rows(&filtered).ok()?;
+        Some((search, rows))
+    }
+
     /// The text currently typed into the main window's chat-list search field,
     /// if any. While it is set KakaoTalk only lists matching rows.
     fn search_field_term(main_snapshot: &AxNode) -> Option<String> {
@@ -2647,7 +2970,17 @@ function run(argv) {
                 "could not find the chat list in KakaoTalk's main window",
             )
         })?;
-        let rows = chat_list_rows(&table.element)?;
+        // KakaoTalk's own search narrows the list to a handful of rows (and
+        // reaches chats that are not loaded); without it every loaded row is
+        // named one AX call at a time. `search` closes it when this returns,
+        // after the row was opened (closing re-creates the rows).
+        let (rows, search) = match filter_chat_list(&main_window, &snap, chat_display_name) {
+            Some((search, rows)) => {
+                trace(started, "chat list filtered by KakaoTalk search");
+                (rows, Some(search))
+            }
+            None => (chat_list_rows(&table.element)?, None),
+        };
 
         // Match the row's first AXStaticText (the chat name) exactly, never as
         // a substring, and refuse duplicates: there is no chat id to
@@ -2663,6 +2996,13 @@ function run(argv) {
                             "chat '{chat_display_name}' is not in KakaoTalk's chat list, which is filtered by the search term '{term}'"
                         ),
                     ),
+                    None if search.is_some() => coded(
+                        ErrorCode::ChatNotFound,
+                        format!(
+                            "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}' ({} rows matched the term)",
+                            rows.len()
+                        ),
+                    ),
                     None => coded(
                         ErrorCode::ChatNotFound,
                         format!(
@@ -2673,15 +3013,35 @@ function run(argv) {
                 });
             }
             super::ChatMatch::Ambiguous(count) => {
-                return Err(coded(
-                    ErrorCode::ChatAmbiguous,
-                    format!(
-                        "chat name '{chat_display_name}' matches {count} chats in the visible list — ambiguous, refusing to guess"
-                    ),
-                ));
+                let same_name =
+                    |n: usize| super::picked_row(&row_names, chat_display_name, Some(n));
+                if let Some(index) = super::policy().pick.and_then(same_name) {
+                    let summary = row_summary(&rows[index].0);
+                    // Safety-relevant, so always shown, not only under debug.
+                    eprintln!(
+                        "--pick {}: opening '{}' ({summary}); the allowlist names every chat \
+                         called this, so a send needs device-owner authentication",
+                        super::policy().pick.unwrap_or_default(),
+                        crate::util::escape_terminal_text(chat_display_name),
+                    );
+                    let _ = PICKED_DUPLICATE.set(summary);
+                    rows[index].0.clone()
+                } else {
+                    let candidates: Vec<String> = (1..=count)
+                        .filter_map(|n| same_name(n).map(|index| (n, index)))
+                        .map(|(n, index)| format!("  {n}) {}", row_summary(&rows[index].0)))
+                        .collect();
+                    return Err(coded(
+                        ErrorCode::ChatAmbiguous,
+                        format!(
+                            "chat name '{chat_display_name}' matches {count} chats in the list (top to bottom):\n{}\nre-run with --pick <N> to open one; openkakao-cli never guesses",
+                            candidates.join("\n")
+                        ),
+                    ));
+                }
             }
         };
-        trace(started, "unique chat-list row found");
+        trace(started, "chat-list row chosen");
 
         if super::policy().fallback_keys {
             // --fallback-keys: the pre-26.9 route, which can raise KakaoTalk,
@@ -3147,19 +3507,20 @@ end run
     /// Search a single root (a window, or the whole app as a fallback) for the
     /// message composer: an `AXScrollArea` that wraps an `AXTextArea` but no
     /// `AXTable` (which would make it the message list instead).
+    /// The composer: the editable text area outside the message list. A
+    /// read-only one never counts: KakaoTalk 26.8 shows the newest incoming
+    /// message ("이모티콘을 보냈습니다.") in a 16 px text area above the
+    /// composer while the history is scrolled up, which read as a draft.
     fn find_input_field(snap: &AxNode) -> Option<AXUIElement> {
         let mut scroll_areas = Vec::new();
         snap.find_all("AXScrollArea", &mut scroll_areas);
-
-        for area in scroll_areas {
-            if area.find_first("AXTable").is_some() {
-                continue; // this scroll area is the message list, not the composer
-            }
-            if let Some(field) = area.find_first("AXTextArea") {
-                return Some(field.element.clone());
-            }
-        }
-        None
+        let value: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXValue"));
+        scroll_areas
+            .into_iter()
+            .filter(|area| area.find_first("AXTable").is_none())
+            .filter_map(|area| area.find_first("AXTextArea"))
+            .find(|field| field.element.is_settable(&value).unwrap_or(false))
+            .map(|field| field.element.clone())
     }
 
     fn find_file_picker_sheet(window: &AXUIElement) -> Result<Option<AXUIElement>> {
@@ -3418,6 +3779,35 @@ end run
     /// makes every verification poll slower.
     const DELIVERY_TAIL_ROWS: usize = 12;
 
+    /// The human-presence boundary every AX write passes right before it
+    /// changes KakaoTalk. An allowlisted chat is already approved; any other
+    /// target needs macOS device-owner authentication, and a declined prompt
+    /// is `chat_not_allowed` (nothing was sent).
+    fn require_send_approval(chat_display_name: &str, action: &str) -> Result<()> {
+        let picked = PICKED_DUPLICATE.get().map(String::as_str);
+        let allowlisted = !super::needs_device_owner_auth(chat_display_name);
+        let Some(reason) = super::auth_reason(allowlisted, picked) else {
+            return Ok(());
+        };
+        let target =
+            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+            "Approve one KakaoTalk {action} ‘{target}’ ({reason}) after reviewing the terminal preview"
+        ))
+        .map_err(|error| {
+            let code = if picked.is_some() {
+                ErrorCode::ChatAmbiguous
+            } else {
+                ErrorCode::ChatNotAllowed
+            };
+            coded(code, format!("'{chat_display_name}' ({reason}): {error:#}"))
+        })
+    }
+
+    /// Set by `open_chat` when `--pick` chose among same-name chats (one
+    /// command per process), so the send asks for device-owner authentication.
+    static PICKED_DUPLICATE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
     struct ChatWindowElements {
         input_field: AXUIElement,
         message_table: AXUIElement,
@@ -3621,7 +4011,11 @@ end run
         })
     }
 
-    fn delivery_observations(table: &AXUIElement) -> Result<Vec<super::DeliveryObservation>> {
+    /// The newest message rows with their AX identity, for anchoring (spacer
+    /// rows and date separators are skipped, as for attachments).
+    fn delivery_observations(
+        table: &AXUIElement,
+    ) -> Result<Vec<(AXUIElement, super::DeliveryObservation)>> {
         let center = table_center_x(table);
         let mut seen = 0;
         let (rows, _) = tail_rows(table, |_| {
@@ -3630,12 +4024,42 @@ end run
         })?;
         Ok(rows
             .iter()
-            .filter_map(|row| message_from_row(row, center))
-            .map(|message| super::DeliveryObservation {
-                text: message.text,
-                outgoing: message.outgoing,
+            .filter_map(|row| {
+                let message = message_from_row(row, center)?;
+                let observation = super::DeliveryObservation {
+                    text: message.text,
+                    outgoing: message.outgoing,
+                };
+                Some((row.element.clone(), observation))
             })
             .collect())
+    }
+
+    /// [`super::is_verified_delivery`] anchored on the baseline's newest row.
+    /// The anchor must be the same AX element still showing the same content,
+    /// so a recycled row view can never move it.
+    fn text_delivery_verified(
+        baseline: &[(AXUIElement, super::DeliveryObservation)],
+        current: &[(AXUIElement, super::DeliveryObservation)],
+        message: &str,
+        composer_value: Option<&str>,
+    ) -> bool {
+        let start = super::appended_rows_start(baseline.last(), current, |left, right| {
+            left.1 == right.1
+                && unsafe { CFEqual(left.0.as_CFTypeRef(), right.0.as_CFTypeRef()) != 0 }
+        });
+        let observations = |rows: &[(AXUIElement, super::DeliveryObservation)]| -> Vec<_> {
+            rows.iter()
+                .map(|(_, observation)| observation.clone())
+                .collect()
+        };
+        super::is_verified_delivery(
+            &observations(baseline),
+            &observations(current),
+            start,
+            message,
+            composer_value,
+        )
     }
 
     /// The newest message-table rows (with their AX identity, for anchoring)
@@ -4213,9 +4637,10 @@ end run
             anyhow!("could not read the exact target's composer before the {noun} paste")
         })?;
         if !existing_draft.is_empty() {
-            anyhow::bail!(
-                "the exact target's composer already contains a draft; refusing to disturb it"
-            );
+            return Err(coded(
+                ErrorCode::ComposerBusy,
+                "the exact target's composer already contains a draft; refusing to disturb it",
+            ));
         }
         focus.before_raise()?;
         open_and_dismiss_file_picker(window, send_files)?;
@@ -4349,11 +4774,7 @@ end run
             // Authentication may take a while and needs nothing from
             // KakaoTalk; give the user's app back first.
             focus.restore();
-            let authenticated_target =
-                crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-            openkakao_cli::human_auth::require_device_owner_auth(&format!(
-                "Approve one KakaoTalk {noun} to ‘{authenticated_target}’ after reviewing the terminal preview"
-            ))?;
+            require_send_approval(chat_display_name, &format!("{noun} to"))?;
             // Revalidate the exact recipient, the previewed name and the very
             // same one-file send button immediately before the commit.
             if find_chat_window(&app, chat_display_name)?.is_none() {
@@ -4619,11 +5040,21 @@ end run
                 "could not read the exact target's composer before commit; refusing to type blindly"
             )
         })?;
-        if !existing_draft.is_empty() {
-            anyhow::bail!(
-                "the exact target's composer already contains a draft; refusing to overwrite or append to it"
-            );
-        }
+        // A draft is cleared only with --discard-draft, and only after the
+        // approval below, so a declined prompt leaves it untouched.
+        let discard = match (existing_draft.is_empty(), super::policy().discard_draft) {
+            (true, _) => None,
+            (false, true) => Some(existing_draft),
+            (false, false) => {
+                return Err(coded(
+                    ErrorCode::ComposerBusy,
+                    format!(
+                        "the exact target's composer already holds a {}-character draft; refusing to overwrite or append to it (--discard-draft clears it first and prints it)",
+                        existing_draft.chars().count()
+                    ),
+                ));
+            }
+        };
 
         let baseline = delivery_observations(&message_table)?;
         trace(started, "delivery baseline read");
@@ -4635,11 +5066,25 @@ end run
         // composer, and pre-send bubble baseline are all known; authentication
         // happens immediately before the composer is changed.
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk message to ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "message to")?;
+        if let Some(draft) = discard {
+            // Printed before it is cleared, so the text is never lost.
+            eprintln!(
+                "--discard-draft: clearing this draft from '{}': {}",
+                crate::util::escape_terminal_text(chat_display_name),
+                serde_json::to_string(&crate::util::escape_terminal_text(&draft))
+                    .unwrap_or_default()
+            );
+            field
+                .set_value(CFString::new("").as_CFType())
+                .map_err(|error| anyhow!("could not clear the draft: {error:?}"))?;
+            if !wait_for_composer_value(&field, "") {
+                return Err(coded(
+                    ErrorCode::ComposerBusy,
+                    "the draft did not clear, so nothing was inserted or sent",
+                ));
+            }
+        }
 
         let commit_note = match &send_button {
             Some(button) => {
@@ -4673,7 +5118,7 @@ end run
                             });
                         }
                     };
-                    if super::is_verified_delivery(
+                    if text_delivery_verified(
                         &baseline,
                         &current,
                         message,
@@ -5105,11 +5550,7 @@ end run
             return Ok(action);
         }
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk reply in ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "reply in")?;
         let baseline = delivery_observations(&elements.message_table)?;
         focus.watch();
         press_bubble_menu_item(&app, &bubble.text_area, "답장")?;
@@ -5140,7 +5581,7 @@ end run
         loop {
             let current = delivery_observations(&elements.message_table);
             if let Ok(current) = &current {
-                if super::is_verified_delivery(
+                if text_delivery_verified(
                     &baseline,
                     current,
                     message,
@@ -5189,11 +5630,7 @@ end run
             return Ok(action);
         }
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk message edit in ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "message edit in")?;
         let rows = |bubbles: &[Bubble]| -> Vec<(String, bool, bool)> {
             bubbles
                 .iter()
@@ -5315,46 +5752,67 @@ end run
         let mut rows = Vec::new();
         table.find_all("AXRow", &mut rows);
 
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut static_texts = Vec::new();
-            row.find_all("AXStaticText", &mut static_texts);
-            // The first static text is the chat name (same convention as
-            // open_chat). Skip rows we can't name.
-            let Some(name) = static_texts.first().and_then(|t| t.value.clone()) else {
+        Ok(rows.into_iter().filter_map(chat_row).collect())
+    }
+
+    /// One chat-list row's name, unread badge, time and preview. Rows we
+    /// can't name are `None`.
+    fn chat_row(row: &AxNode) -> Option<ChatListRow> {
+        let mut static_texts = Vec::new();
+        row.find_all("AXStaticText", &mut static_texts);
+        // The first static text is the chat name (same convention as
+        // open_chat).
+        let name = static_texts.first().and_then(|t| t.value.clone())?;
+        // Among the remaining static texts, the unread badge is the one
+        // whose whole value parses as an integer (e.g. "5"); a
+        // non-numeric one (e.g. "어제", "오후 3:14") is the timestamp.
+        let mut unread = 0;
+        let mut timestamp = String::new();
+        for t in static_texts.iter().skip(1) {
+            let Some(v) = t.value.as_deref() else {
                 continue;
             };
-            // Among the remaining static texts, the unread badge is the one
-            // whose whole value parses as an integer (e.g. "5"); a
-            // non-numeric one (e.g. "어제", "오후 3:14") is the timestamp.
-            let mut unread = 0;
-            let mut timestamp = String::new();
-            for t in static_texts.iter().skip(1) {
-                let Some(v) = t.value.as_deref() else {
-                    continue;
-                };
-                if let Ok(n) = v.trim().parse::<i32>() {
-                    if unread == 0 {
-                        unread = n;
-                    }
-                } else if timestamp.is_empty() {
-                    timestamp = v.to_string();
+            if let Ok(n) = v.trim().parse::<i32>() {
+                if unread == 0 {
+                    unread = n;
                 }
+            } else if timestamp.is_empty() {
+                timestamp = v.to_string();
             }
-            // The last-message preview is the row's AXTextArea value.
-            let preview = row
-                .find_first("AXTextArea")
-                .and_then(|t| t.value.clone())
-                .unwrap_or_default();
-
-            out.push(ChatListRow {
-                name,
-                unread,
-                preview,
-                timestamp,
-            });
         }
-        Ok(out)
+        // The last-message preview is the row's AXTextArea value.
+        let preview = row
+            .find_first("AXTextArea")
+            .and_then(|t| t.value.clone())
+            .unwrap_or_default();
+        Some(ChatListRow {
+            name,
+            unread,
+            preview,
+            timestamp,
+        })
+    }
+
+    /// What tells same-name rows apart for a human: time, preview, pin.
+    fn row_summary(row: &AXUIElement) -> String {
+        let Ok(node) = snapshot(row) else {
+            return "(row could not be read)".to_string();
+        };
+        let pinned = node.any(&|n: &AxNode| {
+            n.role == "AXImage" && n.description.as_deref().is_some_and(|d| d.contains("pin"))
+        });
+        let facts = chat_row(&node).map_or_else(Vec::new, |row| {
+            let mut facts = vec![row.timestamp, crate::util::truncate(&row.preview, 40)];
+            if row.unread > 0 {
+                facts.push(format!("{} unread", row.unread));
+            }
+            facts
+        });
+        let mut parts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+        if pinned {
+            parts.push("📌 pinned".to_string());
+        }
+        crate::util::escape_terminal_text(&parts.join(" · "))
     }
 
     /// KakaoTalk's normal (layer-0) windows across all Spaces and how many are
@@ -5420,6 +5878,238 @@ end run
             "restarting the Dock",
         )
         .map(drop)
+    }
+
+    /// Sign a signed-out KakaoTalk in with an account and password (the
+    /// caller reads the password from the keychain), by Accessibility as
+    /// measured on 26.8. The process is the signature-verified KakaoTalk
+    /// (`find_kakaotalk_pid`) before anything is typed. A logout notice or an
+    /// abandoned QR page is dismissed only when its text is recognized. The
+    /// password goes in through `AXValue` and is read back by length (the
+    /// secure field ignores `AXSelectedText`). The account is inserted with
+    /// `AXSelectedText` into the focused account field, which is what enables
+    /// 로그인. A rejected password is reported and never retried, because
+    /// Kakao locks accounts after repeated failures. Returns `false` when
+    /// KakaoTalk was already signed in.
+    pub fn login_via_ax(account: &str, password: &str) -> Result<bool> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let mut focus = FocusGuard::new(pid);
+        let result = login_steps(&app, account, password, &mut focus);
+        focus.restore();
+        result
+    }
+
+    fn login_window(app: &AXUIElement) -> Option<AXUIElement> {
+        app.windows().ok()?.iter().find_map(|window| {
+            window
+                .title()
+                .ok()
+                .filter(|title| super::is_login_window_title(&title.to_string()))
+                .map(|_| window.clone())
+        })
+    }
+
+    fn static_texts(node: &AxNode) -> Vec<String> {
+        let mut texts = Vec::new();
+        node.find_all("AXStaticText", &mut texts);
+        texts.into_iter().filter_map(|t| t.value.clone()).collect()
+    }
+
+    /// The 로그인 window, raising KakaoTalk (behind the idle wait) when it is
+    /// hidden or on another Space. `None` once KakaoTalk shows its main window
+    /// instead: it is signed in.
+    fn show_login_window(app: &AXUIElement, focus: &mut FocusGuard) -> Result<Option<AXUIElement>> {
+        if let Some(window) = login_window(app) {
+            return Ok(Some(window));
+        }
+        if find_main_window(app).is_ok() {
+            return Ok(None);
+        }
+        focus.before_raise()?;
+        run_bounded(
+            Command::new("open").args(["-b", KAKAOTALK_BUNDLE_ID]),
+            OPEN_CHAT_TIMEOUT,
+            "showing KakaoTalk's sign-in window",
+        )?;
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        loop {
+            if let Some(window) = login_window(app) {
+                return Ok(Some(window));
+            }
+            if find_main_window(app).is_ok() {
+                return Ok(None);
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    "KakaoTalk showed neither its sign-in nor its main window",
+                ));
+            }
+            sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Confirm a recognized sheet on the 로그인 window (`확인`). An unknown
+    /// sheet is left alone and reported.
+    fn dismiss_login_sheet(window: &AXUIElement) -> Result<bool> {
+        let snap = snapshot_shallow(window)?;
+        let Some(sheet) = snap.find_first("AXSheet") else {
+            return Ok(false);
+        };
+        let texts = static_texts(sheet);
+        if !super::is_dismissable_login_sheet(&texts) {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                format!("KakaoTalk's sign-in window shows an unrecognized dialog: {texts:?}"),
+            ));
+        }
+        let mut buttons = Vec::new();
+        sheet.find_all("AXButton", &mut buttons);
+        let ok = buttons
+            .iter()
+            .find(|button| button.title.as_deref() == Some("확인"))
+            .ok_or_else(|| anyhow!("the sign-in dialog {texts:?} has no 확인 button"))?;
+        ok.element
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not confirm the sign-in dialog: {error:?}"))?;
+        sleep(Duration::from_millis(600));
+        Ok(true)
+    }
+
+    fn login_steps(
+        app: &AXUIElement,
+        account: &str,
+        password: &str,
+        focus: &mut FocusGuard,
+    ) -> Result<bool> {
+        focus.watch();
+        let Some(mut window) = show_login_window(app, focus)? else {
+            return Ok(false);
+        };
+        // At most: the logout notice, then leaving an abandoned QR page (its
+        // close button asks to stop, and confirming closes the window).
+        for _ in 0..3 {
+            dismiss_login_sheet(&window)?;
+            if super::login_screen(&static_texts(&snapshot_shallow(&window)?))
+                != super::LoginScreen::Qr
+            {
+                break;
+            }
+            let close = attr_as_element(&window, "AXCloseButton")
+                .ok_or_else(|| anyhow!("the QR sign-in page has no close button"))?;
+            close
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|error| anyhow!("could not leave the QR sign-in page: {error:?}"))?;
+            sleep(Duration::from_millis(600));
+            dismiss_login_sheet(&window)?;
+            let Some(again) = show_login_window(app, focus)? else {
+                return Ok(false);
+            };
+            window = again;
+        }
+
+        let snap = snapshot_shallow(&window)?;
+        let mut fields = Vec::new();
+        snap.find_all("AXTextField", &mut fields);
+        let is_secure = |field: &AxNode| {
+            attr_as_string(&field.element, "AXSubrole").as_deref() == Some("AXSecureTextField")
+        };
+        let (Some(secure), Some(account_field)) = (
+            fields.iter().copied().find(|field| is_secure(field)),
+            fields.iter().copied().find(|field| !is_secure(field)),
+        ) else {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                format!(
+                    "KakaoTalk's sign-in window shows no account/password form: {:?}",
+                    static_texts(&snap)
+                ),
+            ));
+        };
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        let login = buttons
+            .iter()
+            .find(|button| button.title.as_deref() == Some("로그인"))
+            .map(|button| button.element.clone())
+            .ok_or_else(|| anyhow!("the sign-in form has no 로그인 button"))?;
+
+        secure
+            .element
+            .set_value(CFString::new(password).as_CFType())
+            .map_err(|error| anyhow!("could not enter the password: {error:?}"))?;
+        let entered = attr_as_string(&secure.element, "AXValue").map(|v| v.chars().count());
+        if entered != Some(password.chars().count()) {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                "the password field did not take the password",
+            ));
+        }
+        let focused: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXFocused"));
+        let selected_text: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXSelectedText"));
+        account_field
+            .element
+            .set_attribute(&focused, CFBoolean::true_value().as_CFType())
+            .map_err(|error| anyhow!("could not focus the account field: {error:?}"))?;
+        account_field
+            .element
+            .set_value(CFString::new("").as_CFType())
+            .map_err(|error| anyhow!("could not clear the account field: {error:?}"))?;
+        account_field
+            .element
+            .set_attribute(&selected_text, CFString::new(account).as_CFType())
+            .map_err(|error| anyhow!("could not enter the account: {error:?}"))?;
+        let deadline = Instant::now() + COMPOSER_VERIFY_TIMEOUT;
+        loop {
+            let ready = attr_as_string(&account_field.element, "AXValue").as_deref()
+                == Some(account)
+                && attr_as_bool(&login, "AXEnabled") == Some(true);
+            if ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    "the account did not read back or 로그인 stayed disabled",
+                ));
+            }
+            sleep(COMPOSER_VERIFY_POLL_INTERVAL);
+        }
+
+        login
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not press 로그인: {error:?}"))?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            sleep(Duration::from_millis(300));
+            match login_window(app) {
+                None if find_main_window(app).is_ok() => return Ok(true),
+                Some(window) => {
+                    let texts = snapshot_shallow(&window)
+                        .map(|snap| static_texts(&snap))
+                        .unwrap_or_default();
+                    if super::login_screen(&texts) == super::LoginScreen::Rejected {
+                        return Err(coded(
+                            ErrorCode::LoginRejected,
+                            "KakaoTalk rejected the account or password",
+                        ));
+                    }
+                }
+                None => {}
+            }
+            if Instant::now() >= deadline {
+                let texts = login_window(app)
+                    .and_then(|window| snapshot_shallow(&window).ok())
+                    .map(|snap| static_texts(&snap))
+                    .unwrap_or_default();
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    format!("KakaoTalk did not finish signing in within 20s: {texts:?}"),
+                ));
+            }
+        }
     }
 
     /// `open -g` (background) KakaoTalk by bundle id, wait for its process, and
@@ -5638,10 +6328,17 @@ end run
         checks.push(
             match attr_as_string(&elements.input_field, "AXValue").as_deref() {
                 Some("") => check("Composer", Pass, "found and empty", None),
-                Some(_) => check(
+                Some(draft) => check(
                     "Composer",
                     Warn,
-                    "holds a draft; sends refuse to touch it",
+                    format!(
+                        "holds a {}-character draft ({}); sends refuse to touch it unless --discard-draft",
+                        draft.chars().count(),
+                        serde_json::to_string(&crate::util::escape_terminal_text(
+                            &crate::util::truncate(draft, 20)
+                        ))
+                        .unwrap_or_default()
+                    ),
                     None,
                 ),
                 None => check("Composer", Fail, "found but unreadable", None),
@@ -5753,8 +6450,8 @@ end run
 #[cfg(target_os = "macos")]
 pub use imp::{
     assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
+    send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -5829,6 +6526,10 @@ mod stub {
         Err(anyhow!("KakaoTalk for macOS can only be launched on macOS"))
     }
 
+    pub fn login_via_ax(_account: &str, _password: &str) -> Result<bool> {
+        Err(anyhow!("ax-login is only supported on macOS"))
+    }
+
     pub fn diagnose(_chat: Option<&str>) -> Vec<super::AxCheck> {
         vec![super::AxCheck {
             name: "AX automation",
@@ -5865,8 +6566,8 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
+    send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must

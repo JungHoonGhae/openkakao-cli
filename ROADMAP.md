@@ -44,9 +44,9 @@ chats when the window is open.
 Agent-originated replies use a durable `SafeSendOutbox` instead of invoking AX
 directly. `propose` is local-only and idempotent when given a source-event key;
 `approve` is interactive-only and claims the immutable target/message before
-calling the AX adapter. The proposal code is followed by macOS device-owner
-authentication, and direct real `local-send` uses the same OS boundary;
-`local-send-photo` shares it.
+calling the AX adapter. An exact `allowed_send_chats` entry is the human's standing
+approval; any other target needs macOS device-owner authentication before
+the commit, for `safe-send approve` and direct `local-send*` alike.
 Successful verification becomes `sent`. Adapter errors, process interruption,
 or an indeterminate completion after Return may have been pressed become
 `uncertain` and are never retried automatically. A failure proven to happen
@@ -87,11 +87,12 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 - **Open-panel view modes.** The file row is found in the list view (`목록
   보기`). Icon or column view yields no list outline and the send refuses;
   switching the view by AX, or using the `검색` field, is untested.
-- **Chat-list search.** The search `AXTextField` exists only after the 검색
-  button is pressed, and setting its `AXValue` does not re-filter. Filtering
-  by name would mean pressing 검색, inserting with `AXSelectedText`, reading the
-  rows, then clearing (`AXSelectedTextRange` + `AXSelectedText ""`). This would
-  reach chats that are not loaded in the list.
+- **Chat-list search (landed for `--open-if-needed`).** 검색 shows the field,
+  `AXSelectedText` filters (`AXValue` does not), and pressing 검색 again closes
+  the search, clears its term and restores the list in about 0.3 s (measured
+  on 26.8). Open: `ax-watch` and `doctor` still scan the full list, and a term
+  matching many member names (the account's own name matched 140 rows) still
+  costs about 10 ms per row.
 - **Opening a 1:1 chat by URL.** `open -g "kakaotalk://friend?action=chat&user_id=<id>"`
   (string found in the 26.8 binary) might open a closed 1:1 chat without
   activation. `user_id` is not in the AX tree; it may come from `notif-watch`
@@ -112,9 +113,10 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 - Verify that a context menu opened with `AXShowMenu` belongs to the target
   element (its menu-layer window should touch the element's frame); today a
   pre-existing menu is refused and a cursor over the menu aborts the press.
-- Anchor text-send verification on the baseline's newest row by identity, as
-  the attachment path does, so a repeated short message pushed out of the
-  12-row tail cannot read as `delivery_uncertain`.
+- Text-send and reply verification now anchor on the baseline's newest row
+  (same AX element, same content), as the attachment path does. Confirm on a
+  device that a repeated short message pushed out of the 12-row tail verifies
+  instead of reading as `delivery_uncertain`.
 - A closed 1:1 chat with no row in the chat list (friends tab, or
   `kakaotalk://friend?action=chat`) and mentions remain unimplemented.
 - A same-name file removed and recreated in ~/Downloads while KakaoTalk's picker

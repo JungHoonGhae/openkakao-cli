@@ -128,7 +128,7 @@ pub(crate) fn send_attachment(send: AttachmentSend) -> Result<()> {
     eprintln!("  target: {}", escape_terminal_text(&send.chat_name));
     eprintln!("  file:   {display_path} ({} bytes)", send.file.size);
     if !send.skip_confirm {
-        eprint!("Continue to macOS device-owner authentication?\n[y/N] ");
+        eprint!("Continue?\n[y/N] ");
         if !confirm()? {
             println!("Cancelled.");
             return Ok(());

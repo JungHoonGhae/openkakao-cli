@@ -53,12 +53,15 @@ openkakao-cli react <chat_id> <log_id> --json
 ```
 
 `safe-send approve <intent_id>` is the preferred AX write path. It requires
-`allow_ax_send = true`, an exact `allowed_send_chats` match, an interactive
-terminal, the proposal's 12-character approval code, and macOS device-owner
-authentication (Touch ID or login password). Direct real `local-send` and
-`local-send-photo` use the same OS authentication; the opt-in `[safety]
-device_owner_auth_grace_secs` (default 0) reuses one approval for that many
-seconds, sudo-style, and only the human sets it. Agents stop after
+`allow_ax_send = true`, an interactive terminal and the proposal's
+12-character approval code. An exact `allowed_send_chats` entry is the
+human's standing approval: AX writes to that chat (`safe-send approve`,
+`local-send*`, `local-reply`, `local-edit`) need no further authentication.
+Any other target is flagged with `⚠ NOT in [safety] allowed_send_chats` and
+needs macOS device-owner authentication (Touch ID or login password) right
+before the commit; a declined prompt is `chat_not_allowed`. The opt-in
+`[safety] device_owner_auth_grace_secs` (default 0) reuses one approval for
+that many seconds, sudo-style, and only the human sets it. Agents stop after
 `safe-send propose`; a human reviews and approves. There is no unattended
 approval mode. An `uncertain` result is inspected in KakaoTalk and
 never retried automatically.
@@ -147,7 +150,7 @@ min_unattended_send_interval_secs = 10
 1. **Read** with local read commands or `notif-watch` (zero Kakao write risk)
 2. **Propose** with `safe-send propose`; use the source `chat_id` + `log_id` in the idempotency key
 3. **Stop** and return the intent, exact target, message, and approval code to the human
-4. **Human approval** happens only through interactive `safe-send approve`, its approval code, and macOS device-owner authentication
+4. **Human approval** happens only through interactive `safe-send approve` and its approval code, plus macOS device-owner authentication for a chat outside `allowed_send_chats`
 
 ## JSON Output
 
@@ -180,8 +183,16 @@ openkakao-cli auth-status --json   # Check auth recovery state
 With `--json`, a failure prints one JSON object on stdout and exits 1:
 
 ```json
-{"error": {"code": "chat_window_not_open", "message": "...", "fix": "..."}}
+{"error": {"code": "chat_window_not_open", "message": "...", "fix": "...",
+           "disposition": {"delivery": "not_delivered", "retry": "safe"}}}
 ```
+
+`disposition` says whether repeating the command could send twice.
+`delivery` is `not_delivered` for every code except `delivery_uncertain`
+(all are raised before the commit point), `uncertain` for
+`delivery_uncertain`, and `unknown` for uncoded errors. Retry or substitute
+an action only when `retry` is `safe`; otherwise inspect KakaoTalk (or
+`safe-send list`) and decide from that.
 
 Branch on `code`, which stays stable; uncoded errors use `"unclassified"`.
 Show `fix` to the human. Codes: `accessibility_not_granted`,
@@ -191,5 +202,11 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
 `composer_busy`, `message_not_found`, `message_ambiguous`, `action_unverified`,
 `user_active`, `ax_send_disabled`, `chat_not_allowed`, `invalid_file`,
-`attachment_unverified`, `file_type_refused`, `delivery_uncertain`. Never retry a
-`delivery_uncertain` send automatically.
+`attachment_unverified`, `file_type_refused`, `delivery_uncertain`,
+`login_rejected`, `login_needs_human`, `login_secret_missing`. Never retry a
+`delivery_uncertain` send automatically. On `kakaotalk_signed_out`, run
+`openkakao-cli ax-login --json` once; never retry a `login_rejected`. On `chat_ambiguous` with
+`--open-if-needed`, the message numbers the same-name chat-list rows (time,
+preview, pin); show that list to the human and pass `--pick <N>` only with
+their choice. A send to a picked row always needs device-owner
+authentication, because the allowlist names every chat with that name.

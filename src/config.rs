@@ -32,6 +32,8 @@ pub struct AxConfig {
     pub open_if_needed: bool,
     /// Largest file `local-send-file` accepts, in MiB (default 300).
     pub max_file_mb: Option<u64>,
+    /// KakaoTalk login id for `ax-login` (the password stays in the keychain).
+    pub login_account: Option<String>,
 }
 
 pub const DEFAULT_MAX_FILE_MB: u64 = 300;

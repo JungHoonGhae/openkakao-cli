@@ -18,7 +18,7 @@ All three commands find the target chat by its **exact display name**, the same 
 Requirements:
 - KakaoTalk.app installed, running, and already logged in on this Mac
 - Accessibility permission granted to your terminal (System Settings → Privacy & Security → Accessibility)
-- Touch ID or the macOS login password available for device-owner authentication before a real send
+- Touch ID or the macOS login password, for sends to a chat outside `allowed_send_chats`
 
 ## local-send
 
@@ -101,9 +101,9 @@ allowed_send_chats = ["chat display name you want to allow"]
 ```
 
 - `allow_ax_send` — the general opt-in, since both commands drive a real KakaoTalk window to send on your behalf.
-- `allowed_send_chats` — an **exact-match allowlist**. A chat not on this list is rejected before anything is typed or attached. At runtime, a duplicate exact display name is also refused, and the selected row is read back before the send is committed.
+- `allowed_send_chats` — an **exact-match allowlist** of chats you approve in advance: sends to them ask for no authentication. A chat not on this list is flagged `⚠ NOT in [safety] allowed_send_chats` and needs macOS device-owner authentication right before the commit (a declined prompt is `chat_not_allowed`). At runtime, a duplicate exact display name is also refused, and the selected row is read back before the send is committed.
 
-Real sends also require macOS device-owner authentication. `-y` skips only the CLI's ordinary confirmation prompt; it does not bypass Touch ID/login-password authentication. This applies to `local-send-photo` as well.
+`-y` skips only the CLI's ordinary confirmation prompt; it never bypasses the Touch ID/login-password authentication a non-allowlisted chat needs. This applies to `local-send-photo` as well. The allowlist is a file your account can write, so any local process can send to the chats in it; list only chats that may receive such sends.
 
 Both checks are skipped for `--dry-run`, so you can preview against any chat name without touching config.
 
