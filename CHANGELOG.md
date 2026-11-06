@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.11.0] - 2026-11-07
 
 ### Performance
 - **`--open-if-needed` uses KakaoTalk's own chat search.** Instead of naming every loaded chat-list row one AX call at a time (670 rows took about 5.6 s on 26.8; KakaoTalk answers AX calls one at a time, so threads do not help), it presses 검색, inserts the name with `AXSelectedText`, reads only the rows the search leaves, and presses 검색 again to close it, which clears the term and restores the full list. It still matches exact chat names, because the search also matches member names. Measured on the Mac Studio: a missing chat is reported in 1.6 s instead of about 6 s, and a closed chat opened in 3.2 s instead of 6.5 s, in the worst case measured: the account's own name, which matched 140 rows. The search also reaches chats the list has not loaded. When the search is already open, or any step does not behave as measured, it falls back to the full scan.
