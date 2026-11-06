@@ -4810,22 +4810,23 @@ end run
             .iter()
             .map(|bubble| (bubble.text.clone(), bubble.outgoing))
             .collect();
-        let index =
-            match super::pick_bubble(&pairs, target, own_only) {
-                super::BubblePick::Found(index) => index,
-                super::BubblePick::NotFound => return Err(coded(
+        let index = match super::pick_bubble(&pairs, target, own_only) {
+            super::BubblePick::Found(index) => index,
+            super::BubblePick::NotFound => {
+                return Err(coded(
                     ErrorCode::MessageNotFound,
                     format!(
                         "no matching text bubble among the newest rows of '{chat_display_name}'"
                     ),
-                )),
-                super::BubblePick::Ambiguous(count) => {
-                    return Err(coded(
-                        ErrorCode::MessageAmbiguous,
-                        format!("{count} bubbles in '{chat_display_name}' have exactly this text"),
-                    ))
-                }
-            };
+                ))
+            }
+            super::BubblePick::Ambiguous(count) => {
+                return Err(coded(
+                    ErrorCode::MessageAmbiguous,
+                    format!("{count} bubbles in '{chat_display_name}' have exactly this text"),
+                ))
+            }
+        };
         let bubble = bubbles.swap_remove(index);
         Ok((app, pid, focus, window, elements, bubble))
     }
