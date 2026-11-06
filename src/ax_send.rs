@@ -168,12 +168,12 @@ pub(crate) struct AttachmentObservation {
 
 /// Evidence that the commit produced one more outgoing attachment bubble than
 /// the pre-commit baseline: `"file_name"` when a new outgoing row shows the
-/// file name, else the kind's placeholder whose count grew. Counting
+/// exact file name, else the kind's placeholder whose count grew. Counting
 /// (instead of searching) keeps an older identical bubble from verifying a new
 /// send, and a baseline row that scrolls out of the observed tail can only
 /// make the result `None` (uncertain), never a false success.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn new_attachment_evidence(
+fn new_attachment_evidence(
     before: &[AttachmentObservation],
     after: &[AttachmentObservation],
     kind: AttachmentKind,
@@ -195,6 +195,57 @@ pub(crate) fn new_attachment_evidence(
         .find(|placeholder| grew(&|row| row.placeholder.as_deref() == Some(*placeholder)))
 }
 
+/// Where the rows appended after the commit begin: just past the baseline's
+/// newest row, found again by identity. `None` when that row is no longer in
+/// the observed tail.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn appended_rows_start<T>(
+    baseline_last: Option<&T>,
+    after: &[T],
+    same: impl Fn(&T, &T) -> bool,
+) -> Option<usize> {
+    match baseline_last {
+        None => Some(0),
+        Some(last) => after
+            .iter()
+            .rposition(|row| same(last, row))
+            .map(|index| index + 1),
+    }
+}
+
+/// Delivery evidence for an attachment. With the baseline's newest row found
+/// again (`appended_start`), only rows appended after it count, so an older
+/// row that is re-classified later (a late image or share button) cannot
+/// verify a send. Without that anchor, the counting rule applies only if the
+/// table actually gained rows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn attachment_delivery_evidence(
+    before: (&[AttachmentObservation], usize),
+    after: (&[AttachmentObservation], usize),
+    appended_start: Option<usize>,
+    kind: AttachmentKind,
+) -> Option<&'static str> {
+    let ((before_rows, before_total), (after_rows, after_total)) = (before, after);
+    match appended_start {
+        Some(start) => {
+            let appended = after_rows.get(start..).unwrap_or_default();
+            let outgoing = || appended.iter().filter(|row| row.outgoing);
+            if outgoing().any(|row| row.mentions_filename) {
+                return Some("file_name");
+            }
+            kind.accepted_placeholders()
+                .iter()
+                .copied()
+                .find(|placeholder| {
+                    outgoing().any(|row| row.placeholder.as_deref() == Some(*placeholder))
+                })
+        }
+        None if after_total > before_total => {
+            new_attachment_evidence(before_rows, after_rows, kind)
+        }
+        None => None,
+    }
+}
 /// What a verified attachment send reports to the caller.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,8 +399,9 @@ fn preview_send_count(title: &str) -> Option<u32> {
 /// sheet that is not the open panel itself (no 열기/Open button) qualifies,
 /// so an error alert's lone OK or the panel's Open are never chosen. Then a
 /// unique enabled button titled `N개 전송` / `Send N files` with N = 1 (any
-/// other N refuses: more than this file is staged), else the sheet's default
-/// button, else a unique send-like title (`…전송…`, `…보내…`, `Send…`).
+/// other N refuses: more than this file is staged), else a send-like title
+/// (`…전송…`, `…보내…`, `Send…`) that is the sheet's default or unique. An
+/// alert's default `확인` is never chosen.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn pick_preview_send_button(buttons: &[SheetButton]) -> Option<usize> {
     let title = |button: &SheetButton| button.title.as_deref().unwrap_or("").trim().to_string();
@@ -390,12 +442,11 @@ fn pick_preview_send_button(buttons: &[SheetButton]) -> Option<usize> {
         [] => {}
         _ => return None,
     }
-    unique(&|button| button.is_default).or_else(|| {
-        unique(&|button| {
-            let title = title(button);
-            title.starts_with("Send") || title.contains("전송") || title.contains("보내")
-        })
-    })
+    let send_like = |button: &SheetButton| {
+        let title = title(button);
+        title.starts_with("Send") || title.contains("전송") || title.contains("보내")
+    };
+    unique(&|button| button.is_default && send_like(button)).or_else(|| unique(&send_like))
 }
 
 /// A standard folder the open panel's sidebar lists, which the AX-only file
@@ -439,16 +490,52 @@ fn picker_folder(
     .map(|(_, folder)| folder)
 }
 
-/// Whether an open-panel list row shows this file. Finder hides many
-/// extensions by default, so the bare stem also matches; callers refuse when
-/// that makes more than one row match. Both sides must be NFC-normalized.
+/// Which open-panel list row is the file. Names must be NFC-normalized.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn list_name_matches(display: &str, filename: &str) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+enum ListPick {
+    /// The row shows the full file name.
+    Exact(usize),
+    /// The row shows only the stem (Finder hides the extension); the preview
+    /// must then show the exact file name before anything is sent.
+    Stem(usize),
+    Ambiguous(usize),
+    /// Not (yet) listed, or a row's name is unreadable so a stem match could
+    /// be another file.
+    NotFound,
+}
+
+/// Prefer full-name matches. Finder hides many extensions by default, so a
+/// bare stem may match, but only when every row's name is readable (an
+/// unreadable row could be this very file, which would make a stem match the
+/// wrong one) and only uniquely.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_list_row(names: &[Option<String>], filename: &str) -> ListPick {
+    let matching = |wanted: &str| -> Vec<usize> {
+        names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.as_deref().map(str::trim) == Some(wanted))
+            .map(|(index, _)| index)
+            .collect()
+    };
+    match matching(filename).as_slice() {
+        [index] => return ListPick::Exact(*index),
+        [] => {}
+        many => return ListPick::Ambiguous(many.len()),
+    }
     let stem = std::path::Path::new(filename)
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or(filename);
-    display == filename || display == stem
+    if stem == filename || names.iter().any(Option::is_none) {
+        return ListPick::NotFound;
+    }
+    match matching(stem).as_slice() {
+        [index] => ListPick::Stem(*index),
+        [] => ListPick::NotFound,
+        many => ListPick::Ambiguous(many.len()),
+    }
 }
 
 /// KakaoTalk's key in `com.apple.spaces` `app-bindings` (stored lower-case).
@@ -779,6 +866,12 @@ mod policy_tests {
             button("원본으로 전송", true, false, false),
         ];
         assert_eq!(pick_preview_send_button(&ambiguous), None);
+        // An alert with 취소 and a default 확인 is not a preview.
+        let alert = [
+            button("취소", true, false, true),
+            button("확인", true, true, false),
+        ];
+        assert_eq!(pick_preview_send_button(&alert), None);
         // A lone unlabeled extra button is not enough.
         let lone = [
             button("취소", true, false, true),
@@ -813,12 +906,99 @@ mod policy_tests {
     }
 
     #[test]
-    fn list_rows_match_with_or_without_a_hidden_extension() {
-        assert!(list_name_matches("보고서 v2.docx", "보고서 v2.docx"));
-        assert!(list_name_matches("보고서 v2", "보고서 v2.docx"));
-        assert!(!list_name_matches("보고서", "보고서 v2.docx"));
-        assert!(!list_name_matches("보고서 v2.docx.zip", "보고서 v2.docx"));
-        assert!(list_name_matches("README", "README"));
+    fn list_rows_prefer_full_names_and_refuse_unsafe_stem_matches() {
+        let names = |list: &[Option<&str>]| -> Vec<Option<String>> {
+            list.iter().map(|name| name.map(str::to_string)).collect()
+        };
+        let file = "보고서 v2.docx";
+        assert_eq!(
+            pick_list_row(&names(&[Some("a.txt"), Some("보고서 v2.docx")]), file),
+            ListPick::Exact(1)
+        );
+        // Extensions hidden: the stem matches, but only when unique...
+        assert_eq!(
+            pick_list_row(&names(&[Some("a"), Some("보고서 v2")]), file),
+            ListPick::Stem(1)
+        );
+        assert_eq!(
+            pick_list_row(&names(&[Some("보고서 v2"), Some("보고서 v2")]), file),
+            ListPick::Ambiguous(2)
+        );
+        // ...and never while a row is unreadable: it could be this file and
+        // the stem row another one (e.g. 보고서 v2.pdf).
+        assert_eq!(
+            pick_list_row(&names(&[None, Some("보고서 v2")]), file),
+            ListPick::NotFound
+        );
+        // A full-name match is still fine next to unreadable rows.
+        assert_eq!(
+            pick_list_row(&names(&[None, Some("보고서 v2.docx")]), file),
+            ListPick::Exact(1)
+        );
+        assert_eq!(
+            pick_list_row(&names(&[Some("보고서"), Some("v2.docx")]), file),
+            ListPick::NotFound
+        );
+        assert_eq!(
+            pick_list_row(&names(&[Some("README")]), "README"),
+            ListPick::Exact(0)
+        );
+    }
+
+    #[test]
+    fn appended_rows_are_found_by_identity() {
+        let same = |a: &u32, b: &u32| a == b;
+        assert_eq!(
+            appended_rows_start(Some(&7), &[5, 6, 7, 8, 9], same),
+            Some(3)
+        );
+        assert_eq!(appended_rows_start(Some(&7), &[7], same), Some(1));
+        assert_eq!(appended_rows_start(None, &[1, 2], same), Some(0));
+        // The anchor scrolled out of the observed tail.
+        assert_eq!(appended_rows_start(Some(&7), &[8, 9], same), None);
+    }
+
+    #[test]
+    fn only_appended_rows_prove_an_attachment_send() {
+        let kind = AttachmentKind::File;
+        let old_file = row(Some("[파일]"), true, false);
+        let before = vec![row(None, false, false), old_file.clone()];
+        // An older row re-classified later (a late share button) sits before
+        // the anchor: it does not verify anything.
+        let reclassified = vec![row(Some("[파일]"), true, false), old_file.clone()];
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&reclassified, 20), Some(2), kind),
+            None
+        );
+        // A new outgoing file bubble after the anchor does.
+        let mut sent = before.clone();
+        sent.push(row(Some("[파일]"), true, false));
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&sent, 21), Some(2), kind),
+            Some("[파일]")
+        );
+        let mut named = before.clone();
+        named.push(row(None, true, true));
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&named, 21), Some(2), kind),
+            Some("file_name")
+        );
+        // An incoming attachment after the anchor proves nothing.
+        let mut incoming = before.clone();
+        incoming.push(row(Some("[파일]"), false, true));
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&incoming, 21), Some(2), kind),
+            None
+        );
+        // Without the anchor, counting applies only if the table gained rows.
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&reclassified, 20), None, kind),
+            None
+        );
+        assert_eq!(
+            attachment_delivery_evidence((&before, 20), (&sent, 21), None, kind),
+            Some("[파일]")
+        );
     }
 
     #[test]
@@ -1844,10 +2024,12 @@ mod imp {
         }
 
         fn before_raise(&mut self) -> Result<()> {
+            // Every raise waits, even when an earlier step already raised:
+            // the user may have resumed typing since (e.g. after Touch ID).
+            wait_for_user_idle()?;
             if self.armed {
                 return Ok(());
             }
-            wait_for_user_idle()?;
             self.previous = frontmost_pid();
             self.armed = true;
             if crate::util::debug_enabled() {
@@ -2201,6 +2383,9 @@ function run(argv) {
             ));
         }
 
+        // Remember the user's app before anything touches KakaoTalk's menus or
+        // windows (`창 > 채팅` included), so it can always be handed back.
+        focus.watch();
         let main_window = find_or_show_main_window(app)?;
         let snap = ensure_chatrooms_tab(&main_window, true)?;
         let table = snap.find_first("AXTable").ok_or_else(|| {
@@ -2331,14 +2516,97 @@ end run
             .unwrap_or_default()
     }
 
-    /// `AXShowMenu` on `element` and the context menu it opened, found among
-    /// the app's and the element's `AXMenu` children (discovery is flaky, so
-    /// both are polled for a bounded time). `None` means no menu was found and
-    /// nothing else may be done.
+    /// On-screen KakaoTalk windows at a menu layer (kCGWindowLayer >= 100), as
+    /// global (x, y, width, height). Open context menus live there even when
+    /// they are absent from the AX tree. Matched by pid: the owner name is
+    /// localized. Bounds need no Screen Recording permission.
+    fn menu_windows(pid: i32) -> Vec<(f64, f64, f64, f64)> {
+        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+        use core_foundation::number::CFNumber;
+        use core_graphics::window::{
+            copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowLayer,
+            kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+        };
+        let Some(windows) = copy_window_info(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)
+        else {
+            return Vec::new();
+        };
+        let number_in = |info: &CFDictionary<CFString, CFType>, key: &CFString| {
+            info.find(key)
+                .and_then(|value| value.downcast::<CFNumber>())
+                .and_then(|number| number.to_f64())
+        };
+        let (owner_key, layer_key, bounds_key) = unsafe {
+            (
+                CFString::wrap_under_get_rule(kCGWindowOwnerPID),
+                CFString::wrap_under_get_rule(kCGWindowLayer),
+                CFString::wrap_under_get_rule(kCGWindowBounds),
+            )
+        };
+        windows
+            .iter()
+            .filter_map(|window| {
+                let info: CFDictionary<CFString, CFType> =
+                    unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
+                let owner = number_in(&info, &owner_key)?;
+                let layer = number_in(&info, &layer_key)?;
+                if owner as i64 != i64::from(pid) || layer < 100.0 {
+                    return None;
+                }
+                let bounds = info.find(&bounds_key)?.downcast::<CFDictionary>()?;
+                let bounds: CFDictionary<CFString, CFType> =
+                    unsafe { CFDictionary::wrap_under_get_rule(bounds.as_concrete_TypeRef()) };
+                let field = |name: &str| number_in(&bounds, &CFString::new(name));
+                Some((field("X")?, field("Y")?, field("Width")?, field("Height")?))
+            })
+            .collect()
+    }
+
+    /// The `AXMenu` drawn in a menu-layer window: hit-test just below its top
+    /// edge (the first item) and climb `AXParent` to the menu.
+    fn menu_in_window((x, y, width, _height): (f64, f64, f64, f64)) -> Option<AXUIElement> {
+        let system = unsafe { AXUIElement::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        let mut hit: AXUIElementRef = std::ptr::null_mut();
+        let err = unsafe {
+            AXUIElementCopyElementAtPosition(
+                system.as_concrete_TypeRef(),
+                (x + width / 2.0) as f32,
+                (y + 12.0) as f32,
+                &mut hit,
+            )
+        };
+        if err != 0 || hit.is_null() {
+            return None;
+        }
+        let mut current = unsafe { AXUIElement::wrap_under_create_rule(hit) };
+        for _ in 0..8 {
+            if role(&current) == "AXMenu" {
+                return Some(current);
+            }
+            current = attr_as_element(&current, "AXParent")?;
+        }
+        None
+    }
+
+    fn app_pid(app: &AXUIElement) -> Option<i32> {
+        let mut pid = 0;
+        (unsafe { AXUIElementGetPid(app.as_concrete_TypeRef(), &mut pid) } == 0).then_some(pid)
+    }
+
+    /// `AXShowMenu` on `element` and the context menu it opened. Discovery is
+    /// flaky, so three places are polled for a bounded time: the app's and the
+    /// element's `AXMenu` children, and KakaoTalk's menu-layer windows (bubble
+    /// menus only appear there). `None` means no menu was found and nothing
+    /// else may be done.
     fn show_context_menu(app: &AXUIElement, element: &AXUIElement) -> Result<Option<AXUIElement>> {
-        element
-            .perform_action(&CFString::new("AXShowMenu"))
-            .map_err(|error| anyhow!("could not open the context menu: {error:?}"))?;
+        let pid = app_pid(app);
+        // AXShowMenu can report an error (e.g. a timeout) after opening the
+        // menu anyway, so look for it regardless; the caller then closes it.
+        if let Err(error) = element.perform_action(&CFString::new("AXShowMenu")) {
+            if crate::util::debug_enabled() {
+                eprintln!("[ax] AXShowMenu reported {error:?}; still looking for the menu");
+            }
+        }
         let deadline = Instant::now() + MENU_WAIT;
         loop {
             for parent in [app, element] {
@@ -2348,8 +2616,33 @@ end run
                     }
                 }
             }
+            if let Some(menu) = pid
+                .into_iter()
+                .flat_map(menu_windows)
+                .find_map(menu_in_window)
+            {
+                return Ok(Some(menu));
+            }
             if Instant::now() >= deadline {
                 return Ok(None);
+            }
+            sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait (bounded) until no KakaoTalk menu-layer window is on screen, so a
+    /// menu operation never leaves a menu behind. Returns whether one remains.
+    fn menu_still_open(app: &AXUIElement) -> bool {
+        let Some(pid) = app_pid(app) else {
+            return false;
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if menu_windows(pid).is_empty() {
+                return false;
+            }
+            if Instant::now() >= deadline {
+                return true;
             }
             sleep(Duration::from_millis(100));
         }
@@ -2371,9 +2664,14 @@ end run
             })
             .unwrap_or_else(|| row.clone());
         let Some(menu) = show_context_menu(app, &target)? else {
+            let stray = if menu_still_open(app) {
+                "; a KakaoTalk menu is showing but could not be read, click elsewhere to close it (never Esc)"
+            } else {
+                ""
+            };
             return Err(coded(
                 ErrorCode::MenuNotFound,
-                "the chat-list row's context menu did not appear to Accessibility in time",
+                format!("the chat-list row's context menu did not appear to Accessibility in time{stray}"),
             ));
         };
         let items = menu_items(&menu);
@@ -2387,10 +2685,15 @@ end run
             .collect();
         let [(item, _)] = open.as_slice() else {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
+            let stray = if menu_still_open(app) {
+                "; a menu is still showing, click elsewhere to close it (never Esc)"
+            } else {
+                ""
+            };
             return Err(coded(
                 ErrorCode::MenuNotFound,
                 format!(
-                    "the chat-list row's context menu has no unique 채팅방 열기 item (items: {:?})",
+                    "the chat-list row's context menu has no unique 채팅방 열기 item (items: {:?}){stray}",
                     items
                         .iter()
                         .map(|(_, title)| title.clone())
@@ -2398,8 +2701,13 @@ end run
                 ),
             ));
         };
-        item.perform_action(&CFString::new(kAXPressAction))
-            .map_err(|error| anyhow!("could not press 채팅방 열기: {error:?}"))
+        let pressed = item
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not press 채팅방 열기: {error:?}"));
+        if menu_still_open(app) {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+        }
+        pressed
     }
 
     /// The main window, showing it first through the app's own menu bar
@@ -2900,7 +3208,7 @@ end run
     fn tail_rows(
         table: &AXUIElement,
         mut enough: impl FnMut(&AxNode) -> bool,
-    ) -> Result<Vec<AxNode>> {
+    ) -> Result<(Vec<AxNode>, usize)> {
         let started = Instant::now();
         let children = table
             .children()
@@ -2930,7 +3238,7 @@ end run
             );
         }
         newest_first.reverse();
-        Ok(newest_first)
+        Ok((newest_first, children.len() as usize))
     }
 
     /// The newest `count` message bubbles of a chat window, in chronological
@@ -2946,7 +3254,7 @@ end run
         };
         let center = table.center_x();
         let mut found = 0;
-        let rows = tail_rows(&table.element, |row| {
+        let (rows, _) = tail_rows(&table.element, |row| {
             found += usize::from(message_from_row(row, center).is_some());
             found >= count
         })?;
@@ -2974,7 +3282,7 @@ end run
     fn delivery_observations(table: &AXUIElement) -> Result<Vec<super::DeliveryObservation>> {
         let center = table_center_x(table);
         let mut seen = 0;
-        let rows = tail_rows(table, |_| {
+        let (rows, _) = tail_rows(table, |_| {
             seen += 1;
             seen >= DELIVERY_TAIL_ROWS
         })?;
@@ -2988,38 +3296,50 @@ end run
             .collect())
     }
 
+    /// The newest message-table rows (with their AX identity, for anchoring)
+    /// and the table's total row count. A row mentions the file only when a
+    /// non-text node shows exactly its (NFC) name, so `a.pdf` never matches
+    /// `data.pdf` and a typed message never counts.
     fn attachment_observations(
         table: &AXUIElement,
         filename: &str,
-    ) -> Result<Vec<super::AttachmentObservation>> {
+    ) -> Result<(usize, Vec<(AXUIElement, super::AttachmentObservation)>)> {
         let center = table_center_x(table);
         let mut seen = 0;
-        let rows = tail_rows(table, |_| {
+        let (rows, total) = tail_rows(table, |_| {
             seen += 1;
             seen >= DELIVERY_TAIL_ROWS
         })?;
         let target = nfc(filename);
         let shows_filename = |node: &AxNode| {
-            [&node.value, &node.title, &node.description]
-                .into_iter()
-                .flatten()
-                .any(|label| nfc(label).contains(&target))
+            node.role != "AXTextArea"
+                && [&node.value, &node.title, &node.description]
+                    .into_iter()
+                    .flatten()
+                    .any(|label| nfc(label.trim()) == target)
         };
-        Ok(rows
-            .iter()
-            .filter_map(|row| {
-                let (text, bubble) = message_row_text(row)?;
-                let outgoing = center
-                    .zip(bubble.center_x())
-                    .is_some_and(|(table_center, bubble_center)| bubble_center > table_center);
-                Some(super::AttachmentObservation {
-                    // Typed text that happens to read "[파일]" is not a bubble.
-                    placeholder: (bubble.role != "AXTextArea").then_some(text),
-                    outgoing,
-                    mentions_filename: row.any(&shows_filename),
+        Ok((
+            total,
+            rows.iter()
+                .map(|row| {
+                    let classified = message_row_text(row);
+                    let outgoing = classified.as_ref().is_some_and(|(_, bubble)| {
+                        center.zip(bubble.center_x()).is_some_and(
+                            |(table_center, bubble_center)| bubble_center > table_center,
+                        )
+                    });
+                    let observation = super::AttachmentObservation {
+                        // Typed text that happens to read "[파일]" is not a bubble.
+                        placeholder: classified
+                            .filter(|(_, bubble)| bubble.role != "AXTextArea")
+                            .map(|(text, _)| text),
+                        outgoing,
+                        mentions_filename: row.any(&shows_filename),
+                    };
+                    (row.element.clone(), observation)
                 })
-            })
-            .collect())
+                .collect(),
+        ))
     }
 
     /// Classify one message row into displayable text: the row's own
@@ -3200,7 +3520,16 @@ end run
     /// (an uncertain send keeps it for KakaoTalk's own retry).
     struct StagedFile {
         path: std::path::PathBuf,
+        /// (device, inode) of the entry this call created.
+        identity: (u64, u64),
         keep: bool,
+    }
+
+    fn file_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        path.symlink_metadata()
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
     }
 
     impl StagedFile {
@@ -3210,40 +3539,60 @@ end run
             filename: &str,
         ) -> Result<Self> {
             let path = downloads.join(filename);
-            if path.symlink_metadata().is_ok() {
-                return Err(coded(
+            let conflict = || {
+                coded(
                     ErrorCode::StagingConflict,
                     format!("cannot stage '{filename}': ~/Downloads already has an entry with that name"),
-                ));
+                )
+            };
+            if path.symlink_metadata().is_ok() {
+                return Err(conflict());
             }
             if let Err(link_error) = std::fs::hard_link(source, &path) {
                 if link_error.kind() == std::io::ErrorKind::AlreadyExists {
-                    return Err(coded(
-                        ErrorCode::StagingConflict,
-                        format!("cannot stage '{filename}': ~/Downloads already has an entry with that name"),
-                    ));
+                    return Err(conflict());
                 }
-                let copied = std::fs::OpenOptions::new()
+                // Across volumes: copy into a file this call creates itself.
+                // Only that file is ever removed again.
+                let mut target = match std::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&path)
-                    .and_then(|mut target| {
-                        std::io::copy(&mut std::fs::File::open(source)?, &mut target).map(drop)
-                    });
+                {
+                    Ok(target) => target,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        return Err(conflict())
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("could not stage '{filename}' in ~/Downloads (hard link failed: {link_error})")
+                        })
+                    }
+                };
+                let copied = std::fs::File::open(source)
+                    .and_then(|mut source| std::io::copy(&mut source, &mut target).map(drop));
                 if let Err(error) = copied {
+                    drop(target);
                     let _ = std::fs::remove_file(&path);
-                    return Err(error).with_context(|| {
-                        format!("could not stage '{filename}' in ~/Downloads (hard link failed: {link_error})")
-                    });
+                    return Err(error)
+                        .with_context(|| format!("could not copy '{filename}' into ~/Downloads"));
                 }
             }
-            Ok(Self { path, keep: false })
+            let identity = file_identity(&path)
+                .with_context(|| format!("could not inspect the staged '{filename}'"))?;
+            Ok(Self {
+                path,
+                identity,
+                keep: false,
+            })
         }
     }
 
     impl Drop for StagedFile {
         fn drop(&mut self) {
-            if !self.keep {
+            // Remove only the entry created above: if something else took the
+            // name meanwhile, leave it alone.
+            if !self.keep && file_identity(&self.path) == Some(self.identity) {
                 let _ = std::fs::remove_file(&self.path);
             }
         }
@@ -3328,6 +3677,26 @@ end run
         }
     }
 
+    /// `Some(true)` when the open panel's path popup names `folder`,
+    /// `Some(false)` when it names another folder, `None` without a popup.
+    fn panel_shows_folder(
+        panel: &AXUIElement,
+        folder: super::PickerFolder,
+    ) -> Result<Option<bool>> {
+        let snap = snapshot_shallow(panel)?;
+        let mut popups = Vec::new();
+        snap.find_all("AXPopUpButton", &mut popups);
+        if popups.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(popups.iter().any(|popup| {
+            [&popup.value, &popup.title, &popup.description]
+                .into_iter()
+                .flatten()
+                .any(|label| folder.labels().contains(&label.trim()))
+        })))
+    }
+
     /// Choose one file with Accessibility only (measured on KakaoTalk 26.9,
     /// Korean macOS, the user's app frontmost throughout): AXPress the chat's
     /// 파일전송 ⌘O button, select the sidebar folder row, select the exact file
@@ -3339,7 +3708,7 @@ end run
         send_files: &AXUIElement,
         folder: super::PickerFolder,
         filename: &str,
-    ) -> Result<(AXUIElement, AXUIElement)> {
+    ) -> Result<(AXUIElement, AXUIElement, bool)> {
         send_files
             .perform_action(&CFString::new(kAXPressAction))
             .map_err(|error| anyhow!("could not open KakaoTalk's file picker: {error:?}"))?;
@@ -3381,31 +3750,38 @@ end run
             };
             select_row_and_verify(place, &format!("the {folder:?} sidebar row"))?;
 
-            // The file list reloads for the selected folder.
+            // The file list reloads for the selected folder. Read it only once
+            // the panel's path popup names that folder, so a row of the
+            // previously shown folder is never picked.
             let target = nfc(filename);
             let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
-            let (list, file_row) = loop {
-                if let (_, Some(list)) = open_panel_outlines(&panel)? {
-                    let rows = rows_with_label(&list, &["AXTextField"], "open panel file list")?;
-                    let matching: Vec<_> = rows
-                        .iter()
-                        .filter(|(_, name)| {
-                            name.as_deref()
-                                .is_some_and(|name| super::list_name_matches(&nfc(name), &target))
-                        })
-                        .collect();
-                    match matching.as_slice() {
-                        [(row, _)] => break (list, row.clone()),
-                        [] => {}
-                        _ => anyhow::bail!(
-                            "{} open-panel rows match '{filename}' (hidden extensions?); refusing to guess",
-                            matching.len()
-                        ),
+            let (list, file_row, strict) = loop {
+                let confirmed = panel_shows_folder(&panel, folder)?;
+                if confirmed != Some(false) {
+                    if let (_, Some(list)) = open_panel_outlines(&panel)? {
+                        let rows =
+                            rows_with_label(&list, &["AXTextField"], "open panel file list")?;
+                        let names: Vec<Option<String>> = rows
+                            .iter()
+                            .map(|(_, name)| name.as_deref().map(nfc))
+                            .collect();
+                        match super::pick_list_row(&names, &target) {
+                            // Without a confirmed folder, the preview must also
+                            // show the exact file name before anything is sent.
+                            super::ListPick::Exact(index) => {
+                                break (list, rows[index].0.clone(), confirmed.is_none())
+                            }
+                            super::ListPick::Stem(index) => break (list, rows[index].0.clone(), true),
+                            super::ListPick::Ambiguous(count) => anyhow::bail!(
+                                "{count} open-panel rows match '{filename}' (hidden extensions?); refusing to guess"
+                            ),
+                            super::ListPick::NotFound => {}
+                        }
                     }
                 }
                 if Instant::now() >= deadline {
                     anyhow::bail!(
-                        "the open panel did not list '{filename}' in {folder:?} (it must be in list view)"
+                        "the open panel did not list '{filename}' in {folder:?} (it must be in list view, with every name readable)"
                     );
                 }
                 sleep(Duration::from_millis(150));
@@ -3429,7 +3805,8 @@ end run
             wait_for_open_button(&panel)?
                 .perform_action(&CFString::new(kAXPressAction))
                 .map_err(|error| anyhow!("could not press 열기/Open: {error:?}"))?;
-            wait_for_attachment_preview(window)
+            let (preview, send_button) = wait_for_attachment_preview(window)?;
+            Ok((preview, send_button, strict))
         })();
         if result.is_err() {
             cancel_sheet_best_effort(window);
@@ -3467,22 +3844,22 @@ end run
             composer,
             &format!("exact target composer for the {noun} paste"),
         )?;
-        press_command_v()?;
-        let preview = match wait_for_attachment_preview(window) {
-            Ok(preview) => preview,
-            Err(error) => {
-                cancel_sheet_best_effort(window);
-                return Err(coded(ErrorCode::AttachmentUnverified, format!("{error:#}")));
+        // From the paste on, KakaoTalk may show a preview: every failure
+        // cancels it before returning.
+        let pasted = (|| {
+            press_command_v()?;
+            let preview = wait_for_attachment_preview(window)?;
+            if pasteboard_change_count()? != staged {
+                anyhow::bail!(
+                    "the clipboard changed between staging the file and KakaoTalk's paste; refusing to send an attachment that may not be this file"
+                );
             }
-        };
-        if pasteboard_change_count()? != staged {
+            Ok(preview)
+        })();
+        pasted.map_err(|error| {
             cancel_sheet_best_effort(window);
-            return Err(coded(
-                ErrorCode::AttachmentUnverified,
-                "the clipboard changed between staging the file and KakaoTalk's paste; refusing to send an attachment that may not be this file",
-            ));
-        }
-        Ok(preview)
+            coded(ErrorCode::AttachmentUnverified, format!("{error:#}"))
+        })
     }
 
     /// Send one file through the signed KakaoTalk app, focus-free by default:
@@ -3548,8 +3925,8 @@ end run
             .ok_or_else(|| anyhow!("could not find KakaoTalk's unique 파일전송 (⌘O) button"))?;
 
         let mut staged = None;
-        let (preview_sheet, send_button) = if fallback_keys {
-            paste_file_with_keys(
+        let (preview_sheet, send_button, strict) = if fallback_keys {
+            let (preview, button) = paste_file_with_keys(
                 &app,
                 &window,
                 &elements.input_field,
@@ -3557,7 +3934,9 @@ end run
                 path,
                 noun,
                 &mut focus,
-            )?
+            )?;
+            // The pasteboard change count already proved which file it is.
+            (preview, button, false)
         } else {
             let folder = match folder {
                 Some(folder) => folder,
@@ -3571,36 +3950,62 @@ end run
             focus.watch();
             pick_file_in_open_panel(&window, &send_files, folder, filename)?
         };
-        let preview_shows_filename = sheet_has_exact_filename(&preview_sheet, filename)?;
-        trace(started, "single-file preview ready");
 
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        if let Err(error) = openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk {noun} to ‘{authenticated_target}’ after reviewing the terminal preview"
-        )) {
-            cancel_sheet_best_effort(&window);
-            return Err(error);
-        }
-
-        // Revalidate the exact recipient and previewed basename immediately
-        // before the first action that can upload the file.
-        if find_chat_window(&app, chat_display_name)?.is_none() {
-            anyhow::bail!("exact target window disappeared before the {noun} commit");
-        }
-        if preview_shows_filename && !sheet_has_exact_filename(&preview_sheet, filename)? {
-            cancel_sheet_best_effort(&window);
-            anyhow::bail!(
-                "previewed {noun} changed before commit; the send button was not pressed"
-            );
-        }
-        let baseline = match attachment_observations(&elements.message_table, filename) {
-            Ok(baseline) => baseline,
+        // Everything up to the press is pre-commit: any failure cancels the
+        // preview so no staged attachment is left on screen.
+        let prepared = (|| {
+            let preview_shows_filename = sheet_has_exact_filename(&preview_sheet, filename)?;
+            if strict && !preview_shows_filename {
+                return Err(coded(
+                    ErrorCode::AttachmentUnverified,
+                    format!(
+                        "the open panel matched '{filename}' without its extension (or in an unconfirmed folder) and KakaoTalk's preview does not show the name; turn on Finder › Settings › Advanced › Show all filename extensions and retry"
+                    ),
+                ));
+            }
+            trace(started, "single-file preview ready");
+            // Authentication may take a while and needs nothing from
+            // KakaoTalk; give the user's app back first.
+            focus.restore();
+            let authenticated_target =
+                crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+            openkakao_cli::human_auth::require_device_owner_auth(&format!(
+                "Approve one KakaoTalk {noun} to ‘{authenticated_target}’ after reviewing the terminal preview"
+            ))?;
+            // Revalidate the exact recipient, the previewed name and the very
+            // same one-file send button immediately before the commit.
+            if find_chat_window(&app, chat_display_name)?.is_none() {
+                anyhow::bail!("exact target window disappeared before the {noun} commit");
+            }
+            if preview_shows_filename && !sheet_has_exact_filename(&preview_sheet, filename)? {
+                anyhow::bail!(
+                    "previewed {noun} changed before commit; the send button was not pressed"
+                );
+            }
+            let buttons = sheet_buttons(&preview_sheet)?;
+            let facts: Vec<super::SheetButton> =
+                buttons.iter().map(|(_, facts)| facts.clone()).collect();
+            let still_send = super::pick_preview_send_button(&facts).is_some_and(|index| unsafe {
+                CFEqual(buttons[index].0.as_CFTypeRef(), send_button.as_CFTypeRef()) != 0
+            });
+            if !still_send {
+                anyhow::bail!(
+                    "KakaoTalk's preview changed before commit; the send button was not pressed"
+                );
+            }
+            attachment_observations(&elements.message_table, filename)
+                .with_context(|| {
+                    format!(
+                        "could not re-read the exact target's messages before the {noun} commit"
+                    )
+                })
+                .map(|baseline| (baseline, preview_shows_filename))
+        })();
+        let ((baseline_total, baseline), preview_shows_filename) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
                 cancel_sheet_best_effort(&window);
-                return Err(error.context(format!(
-                    "could not re-read the exact target's messages before the {noun} commit"
-                )));
+                return Err(error);
             }
         };
         // KakaoTalk 26.7 can return AX error -25200 even after accepting the
@@ -3608,19 +4013,35 @@ end run
         let commit_error = send_button
             .perform_action(&CFString::new(kAXPressAction))
             .err();
-        // Verification below is read-only: hand the foreground back now.
         focus.restore();
         trace(started, "attachment committed");
 
+        let observations = |rows: &[(AXUIElement, super::AttachmentObservation)]| -> Vec<super::AttachmentObservation> {
+            rows.iter().map(|(_, observation)| observation.clone()).collect()
+        };
+        let before = observations(&baseline);
         let deadline = Instant::now() + ATTACHMENT_VERIFY_TIMEOUT;
         let failure = loop {
             match find_chat_window(&app, chat_display_name) {
                 Ok(Some(_)) => {
                     match attachment_observations(&elements.message_table, filename) {
-                        Ok(current) => {
-                            if let Some(verified_by) =
-                                super::new_attachment_evidence(&baseline, &current, kind)
-                            {
+                        Ok((total, current)) => {
+                            let start = super::appended_rows_start(
+                                baseline.last().map(|(row, _)| row),
+                                &current
+                                    .iter()
+                                    .map(|(row, _)| row.clone())
+                                    .collect::<Vec<_>>(),
+                                |left, right| unsafe {
+                                    CFEqual(left.as_CFTypeRef(), right.as_CFTypeRef()) != 0
+                                },
+                            );
+                            if let Some(verified_by) = super::attachment_delivery_evidence(
+                                (&before, baseline_total),
+                                (&observations(&current), total),
+                                start,
+                                kind,
+                            ) {
                                 trace(started, &format!("delivery verified by {verified_by}"));
                                 return Ok(super::AttachmentReceipt {
                                     verified_by,
@@ -3643,7 +4064,7 @@ end run
             }
             if Instant::now() >= deadline {
                 break format!(
-                    "the {noun} may have been sent but no additional outgoing attachment bubble appeared in '{chat_display_name}' within {}s — inspect KakaoTalk before retrying",
+                    "the {noun} may have been sent but no new outgoing attachment bubble appeared in '{chat_display_name}' within {}s; inspect KakaoTalk before retrying",
                     ATTACHMENT_VERIFY_TIMEOUT.as_secs(),
                 );
             }
@@ -3887,14 +4308,21 @@ end run
         message: &str,
     ) -> Result<CommitNote> {
         let selected_text: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXSelectedText"));
-        // The composer was verified empty and a background KakaoTalk takes no
-        // keystrokes, so text matching the message (newlines normalized) is
-        // our own insertion and is removed again on a pre-commit failure.
+        // Re-check right before inserting: a draft typed during Touch ID must
+        // never be appended to or overwritten.
+        if attr_as_string(field, "AXValue").as_deref() != Some("") {
+            anyhow::bail!("the exact target's composer is no longer empty; nothing was inserted");
+        }
+        // The composer was empty a moment ago. Text equal to the message
+        // (newlines normalized) is ours; while KakaoTalk is in the background it
+        // receives no keystrokes, so anything in the composer is ours too.
         let clear_own_insertion = || {
             let normalize = |text: &str| text.replace("\r\n", "\n").replace('\r', "\n");
-            if attr_as_string(field, "AXValue")
-                .is_some_and(|value| normalize(&value) == normalize(message))
-            {
+            let ours = attr_as_string(field, "AXValue").is_some_and(|value| {
+                normalize(&value) == normalize(message)
+                    || (!value.is_empty() && attr_as_bool(app, "AXFrontmost") != Some(true))
+            });
+            if ours {
                 let _ = field.set_value(CFString::new("").as_CFType());
             }
         };
@@ -3955,10 +4383,21 @@ end run
         focus_window_and_verify(app, &window, focus)
             .context("could not raise the exact target window for the Return-key commit")?;
         focus_and_verify(field, "exact target composer")?;
+        if attr_as_string(field, "AXValue").as_deref() != Some("") {
+            anyhow::bail!("the exact target's composer is no longer empty; nothing was inserted");
+        }
+        // KakaoTalk is frontmost here, so only an exact copy of the message is
+        // known to be ours and removed on a pre-commit failure.
+        let clear_own_text = || {
+            if attr_as_string(field, "AXValue").as_deref() == Some(message) {
+                let _ = field.set_value(CFString::new("").as_CFType());
+            }
+        };
         field
             .set_value(CFString::new(message).as_CFType())
             .map_err(|error| anyhow!("could not set the exact target composer: {error:?}"))?;
         if !wait_for_composer_value(field, message) {
+            clear_own_text();
             anyhow::bail!(
                 "could not verify the exact message in the target composer; Return was not pressed"
             );
@@ -3968,8 +4407,14 @@ end run
         // PID-scoped Return event. The composer read-back loop above may wait
         // for up to a second, during which another KakaoTalk control could
         // otherwise gain focus.
-        focus_and_verify(field, "exact target composer immediately before commit")?;
+        if let Err(error) =
+            focus_and_verify(field, "exact target composer immediately before commit")
+        {
+            clear_own_text();
+            return Err(error);
+        }
         if attr_as_string(field, "AXValue").as_deref() != Some(message) {
+            clear_own_text();
             anyhow::bail!(
                 "the exact target composer changed before commit; Return was not pressed"
             );
@@ -4227,6 +4672,17 @@ end run
             "one running process with Kakao's bundle/team signature",
             None,
         ));
+        let menus = menu_windows(pid).len();
+        if menus > 0 {
+            checks.push(check(
+                "Open KakaoTalk menus",
+                Warn,
+                format!(
+                    "{menus} KakaoTalk menu window(s) are on screen; close them by clicking elsewhere (never Esc, which closes KakaoTalk windows)"
+                ),
+                None,
+            ));
+        }
 
         match find_main_window(&app) {
             Err(error) if error_code(&error) == Some(ErrorCode::KakaotalkSignedOut) => {
@@ -4381,6 +4837,47 @@ end run
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn staging_links_without_overwriting_and_cleans_up_only_its_own_entry() {
+            let source_dir = tempfile::tempdir().unwrap();
+            let downloads = tempfile::tempdir().unwrap();
+            let source = source_dir.path().join("보고서.docx");
+            std::fs::write(&source, b"original").unwrap();
+
+            let staged = StagedFile::create(&source, downloads.path(), "보고서.docx").unwrap();
+            let staged_path = downloads.path().join("보고서.docx");
+            assert_eq!(std::fs::read(&staged_path).unwrap(), b"original");
+            // A second staging of the same name is a conflict, never an overwrite.
+            let conflict = StagedFile::create(&source, downloads.path(), "보고서.docx")
+                .err()
+                .expect("same name must conflict");
+            assert_eq!(error_code(&conflict), Some(ErrorCode::StagingConflict));
+            drop(staged);
+            assert!(!staged_path.exists());
+            assert_eq!(std::fs::read(&source).unwrap(), b"original");
+
+            // Kept on an uncertain send.
+            let mut kept = StagedFile::create(&source, downloads.path(), "보고서.docx").unwrap();
+            kept.keep = true;
+            drop(kept);
+            assert!(staged_path.exists());
+            std::fs::remove_file(&staged_path).unwrap();
+
+            // If another file took the name meanwhile, it is left alone.
+            let replaced = StagedFile::create(&source, downloads.path(), "보고서.docx").unwrap();
+            std::fs::remove_file(&staged_path).unwrap();
+            std::fs::write(&staged_path, b"someone else's").unwrap();
+            drop(replaced);
+            assert_eq!(std::fs::read(&staged_path).unwrap(), b"someone else's");
+        }
+
+        #[test]
+        fn nfc_composes_decomposed_hangul() {
+            let decomposed = "\u{1107}\u{1169}\u{1100}\u{1169}\u{1109}\u{1165}.docx";
+            assert_eq!(nfc(decomposed), "보고서.docx");
+            assert_eq!(nfc("plain.txt"), "plain.txt");
+        }
 
         #[test]
         fn open_chat_timeout_is_bounded() {

@@ -112,13 +112,17 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 The measured building blocks: each bubble row is `AXRow > AXCell (AXShowMenu) >
 [AXStaticText time, AXImage, AXTextArea text (AXShowMenu)]`. `AXShowMenu` on
 the bubble's `AXTextArea` opens KakaoTalk's context menu without activating
-the app. The menu is found among the application's `AXMenu` children and
-closed with `AXCancel`. Items include 답장, 수정, 복사하기, 나에게서만 삭제
-(group chats add 모든 대화상대에게서 삭제 within the deletion window), 공지,
-공유. Menu discovery is flaky (found once, missed twice within 2.4 s while a
-menu was visibly open), so the same rules as `open_row_via_context_menu`
-apply: poll the app's and the element's `AXMenu` children with a bounded wait,
-do nothing else if the menu is not found, and never leave one open.
+the app. Bubble menus are **not** among the application's AX children. They
+are on screen as a KakaoTalk-owned window at `kCGWindowLayer` 101, so they are
+found the way `show_context_menu` now does it: poll
+`CGWindowListCopyWindowInfo(OnScreenOnly)` for a window owned by KakaoTalk's
+pid (never its localized owner name) at layer ≥ 100, hit-test
+`(midX, minY + 12)` system-wide, and climb `AXParent` to the `AXMenu`. Its
+items (오려두기, 복사하기, 붙여넣기, 공유…, 대화 캡처, 나에게서만 삭제, 태그, 수정,
+답장, 공유, ChatGPT, 공지; group chats add 모든 대화상대에게서 삭제 within the
+deletion window) are pressed with `AXPress`, and `AXCancel` closes the menu (its
+layer-101 window disappears). After every menu operation no menu-layer window
+may remain; `doctor` warns when one is open.
 
 Planned commands, all experimental and verified on the memo chat first, with
 the exact allowlist, `--dry-run` printing the targeted bubble, refusal when
@@ -137,10 +141,12 @@ the text matches more than one bubble, and verification by re-reading rows:
   삭제 item, confirm only a dialog whose buttons are recognized, and verify the
   bubble is gone or marked deleted. This is irreversible, so own outgoing
   bubbles only and device-owner authentication first.
-- `--mention "<name>"` for sends: insert `@` plus a partial name, find the
-  suggestion `AXTable` (not the message table), `AXPress` the row whose text
-  matches exactly, and verify a mention token is in the composer before adding
-  the rest. Only the table's appearance has been observed.
+- Mentions cannot be completed focus-free. After `@Pe` is inserted, the
+  suggestion `AXTable` lists candidates (`Pearl 진주`, `Pearl_진주`). But
+  `AXSelected`, `AXPress` or `AXConfirm` on the row, cell or table, or typing
+  the full name, do not turn the text into a mention token. A `--mention`
+  option would therefore need the idle-gated raise + Return fallback; until
+  then mentions stay manual.
 
 ## MCP server mode (designed, not implemented)
 
