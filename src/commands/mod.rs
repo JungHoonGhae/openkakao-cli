@@ -1,5 +1,6 @@
 pub mod analytics;
 pub mod auth;
+pub mod ax_login;
 pub mod ax_read;
 pub mod ax_watch;
 pub mod chats;

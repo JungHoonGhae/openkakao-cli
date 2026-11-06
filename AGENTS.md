@@ -202,8 +202,10 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
 `composer_busy`, `message_not_found`, `message_ambiguous`, `action_unverified`,
 `user_active`, `ax_send_disabled`, `chat_not_allowed`, `invalid_file`,
-`attachment_unverified`, `file_type_refused`, `delivery_uncertain`. Never retry a
-`delivery_uncertain` send automatically. On `chat_ambiguous` with
+`attachment_unverified`, `file_type_refused`, `delivery_uncertain`,
+`login_rejected`, `login_needs_human`, `login_secret_missing`. Never retry a
+`delivery_uncertain` send automatically. On `kakaotalk_signed_out`, run
+`openkakao-cli ax-login --json` once; never retry a `login_rejected`. On `chat_ambiguous` with
 `--open-if-needed`, the message numbers the same-name chat-list rows (time,
 preview, pin); show that list to the human and pass `--pick <N>` only with
 their choice. A send to a picked row always needs device-owner

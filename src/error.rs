@@ -123,6 +123,9 @@ pub enum ErrorCode {
     FileTypeRefused,
     AttachmentUnverified,
     DeliveryUncertain,
+    LoginRejected,
+    LoginNeedsHuman,
+    LoginSecretMissing,
 }
 
 impl ErrorCode {
@@ -153,6 +156,9 @@ impl ErrorCode {
             Self::FileTypeRefused => "file_type_refused",
             Self::AttachmentUnverified => "attachment_unverified",
             Self::DeliveryUncertain => "delivery_uncertain",
+            Self::LoginRejected => "login_rejected",
+            Self::LoginNeedsHuman => "login_needs_human",
+            Self::LoginSecretMissing => "login_secret_missing",
         }
     }
 
@@ -168,7 +174,8 @@ impl ErrorCode {
                  `openkakao-cli init`), make sure it is signed in, then re-run."
             }
             Self::KakaotalkSignedOut => {
-                "KakaoTalk is showing its sign-in window. Sign in on this Mac, then re-run."
+                "KakaoTalk is showing its sign-in window. Run `openkakao-cli ax-login` (password \
+                 from the keychain), or sign in on this Mac, then re-run."
             }
             Self::MainWindowNotVisible => {
                 "Open KakaoTalk's main window on the Space you are viewing. If it lives on another \
@@ -272,6 +279,24 @@ impl ErrorCode {
             Self::DeliveryUncertain => {
                 "The send may have happened. Look at the chat in KakaoTalk before retrying; never \
                  retry blindly."
+            }
+            Self::LoginRejected => {
+                "KakaoTalk rejected the account or password. Do not retry: Kakao locks accounts \
+                 after repeated failures. Check the account (the login id, often an email, not \
+                 the phone number) and re-save the password: `security delete-generic-password \
+                 -s openkakao.kakaotalk && security add-generic-password -s openkakao.kakaotalk \
+                 -a <account> -w`."
+            }
+            Self::LoginNeedsHuman => {
+                "KakaoTalk wants something ax-login does not automate (a device check, a captcha \
+                 or an unknown dialog). Finish signing in on this Mac, or use the QR code page \
+                 with the KakaoTalk app on your phone."
+            }
+            Self::LoginSecretMissing => {
+                "Save the KakaoTalk password in the login keychain once, in a terminal: \
+                 `security add-generic-password -s openkakao.kakaotalk -a <account> -w` (it \
+                 prompts without echo). Pass the login id with --account or set [ax] \
+                 login_account in ~/.config/openkakao/config.toml."
             }
         }
     }

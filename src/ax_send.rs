@@ -448,6 +448,41 @@ fn is_clock_label(value: &str) -> bool {
 
 /// The single window a signed-out KakaoTalk shows (it reuses the
 /// `Main Window` identifier). Only `로그인` is verified on 26.9.
+/// What the 로그인 window shows, from its texts (KakaoTalk 26.8, Korean UI).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoginScreen {
+    /// The account/password form.
+    Form,
+    /// The QR code page, live or expired.
+    Qr,
+    /// "카카오계정 또는 비밀번호를 다시 확인해 주세요."
+    Rejected,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn login_screen(texts: &[String]) -> LoginScreen {
+    let shows = |needle: &str| texts.iter().any(|text| text.contains(needle));
+    if shows("다시 확인해 주세요") {
+        LoginScreen::Rejected
+    } else if shows("QR코드로 로그인할 수 있습니다") || shows("인증 시간이 만료")
+    {
+        LoginScreen::Qr
+    } else {
+        LoginScreen::Form
+    }
+}
+
+/// Sheets on the 로그인 window that `ax-login` may confirm: the logout notice
+/// ("…로그아웃 되었습니다.") and leaving the QR page ("인증 진행을 중단하시겠습니까?").
+/// Any other sheet is left to a human.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn is_dismissable_login_sheet(texts: &[String]) -> bool {
+    texts
+        .iter()
+        .any(|text| text.contains("로그아웃 되었습니다") || text.contains("인증 진행을 중단"))
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_login_window_title(title: &str) -> bool {
     matches!(title.trim(), "로그인" | "Login" | "Log In")
@@ -850,6 +885,29 @@ mod policy_tests {
 
     #[test]
     fn login_window_titles_are_recognized_exactly() {
+        let texts = |all: &[&str]| all.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            login_screen(&texts(&[
+                "카카오계정 또는 비밀번호를 다시 확인해 주세요.",
+                "또는"
+            ])),
+            LoginScreen::Rejected
+        );
+        assert_eq!(
+            login_screen(&texts(&["인증 시간이 만료되었습니다.", "00:00"])),
+            LoginScreen::Qr
+        );
+        assert_eq!(login_screen(&texts(&["또는"])), LoginScreen::Form);
+        assert!(is_dismissable_login_sheet(&texts(&[
+            "로그아웃 되었습니다.",
+            "다른 기기에서 로그인해 로그아웃 되었습니다."
+        ])));
+        assert!(is_dismissable_login_sheet(&texts(&[
+            "인증 진행을 중단하시겠습니까?"
+        ])));
+        assert!(!is_dismissable_login_sheet(&texts(&[
+            "계정을 삭제하시겠습니까?"
+        ])));
         assert!(is_login_window_title("로그인"));
         assert!(is_login_window_title(" 로그인 "));
         assert!(!is_login_window_title("카카오톡"));
@@ -5822,6 +5880,238 @@ end run
         .map(drop)
     }
 
+    /// Sign a signed-out KakaoTalk in with an account and password (the
+    /// caller reads the password from the keychain), by Accessibility as
+    /// measured on 26.8. The process is the signature-verified KakaoTalk
+    /// (`find_kakaotalk_pid`) before anything is typed. A logout notice or an
+    /// abandoned QR page is dismissed only when its text is recognized. The
+    /// password goes in through `AXValue` and is read back by length (the
+    /// secure field ignores `AXSelectedText`). The account is inserted with
+    /// `AXSelectedText` into the focused account field, which is what enables
+    /// 로그인. A rejected password is reported and never retried, because
+    /// Kakao locks accounts after repeated failures. Returns `false` when
+    /// KakaoTalk was already signed in.
+    pub fn login_via_ax(account: &str, password: &str) -> Result<bool> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let mut focus = FocusGuard::new(pid);
+        let result = login_steps(&app, account, password, &mut focus);
+        focus.restore();
+        result
+    }
+
+    fn login_window(app: &AXUIElement) -> Option<AXUIElement> {
+        app.windows().ok()?.iter().find_map(|window| {
+            window
+                .title()
+                .ok()
+                .filter(|title| super::is_login_window_title(&title.to_string()))
+                .map(|_| window.clone())
+        })
+    }
+
+    fn static_texts(node: &AxNode) -> Vec<String> {
+        let mut texts = Vec::new();
+        node.find_all("AXStaticText", &mut texts);
+        texts.into_iter().filter_map(|t| t.value.clone()).collect()
+    }
+
+    /// The 로그인 window, raising KakaoTalk (behind the idle wait) when it is
+    /// hidden or on another Space. `None` once KakaoTalk shows its main window
+    /// instead: it is signed in.
+    fn show_login_window(app: &AXUIElement, focus: &mut FocusGuard) -> Result<Option<AXUIElement>> {
+        if let Some(window) = login_window(app) {
+            return Ok(Some(window));
+        }
+        if find_main_window(app).is_ok() {
+            return Ok(None);
+        }
+        focus.before_raise()?;
+        run_bounded(
+            Command::new("open").args(["-b", KAKAOTALK_BUNDLE_ID]),
+            OPEN_CHAT_TIMEOUT,
+            "showing KakaoTalk's sign-in window",
+        )?;
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        loop {
+            if let Some(window) = login_window(app) {
+                return Ok(Some(window));
+            }
+            if find_main_window(app).is_ok() {
+                return Ok(None);
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    "KakaoTalk showed neither its sign-in nor its main window",
+                ));
+            }
+            sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Confirm a recognized sheet on the 로그인 window (`확인`). An unknown
+    /// sheet is left alone and reported.
+    fn dismiss_login_sheet(window: &AXUIElement) -> Result<bool> {
+        let snap = snapshot_shallow(window)?;
+        let Some(sheet) = snap.find_first("AXSheet") else {
+            return Ok(false);
+        };
+        let texts = static_texts(sheet);
+        if !super::is_dismissable_login_sheet(&texts) {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                format!("KakaoTalk's sign-in window shows an unrecognized dialog: {texts:?}"),
+            ));
+        }
+        let mut buttons = Vec::new();
+        sheet.find_all("AXButton", &mut buttons);
+        let ok = buttons
+            .iter()
+            .find(|button| button.title.as_deref() == Some("확인"))
+            .ok_or_else(|| anyhow!("the sign-in dialog {texts:?} has no 확인 button"))?;
+        ok.element
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not confirm the sign-in dialog: {error:?}"))?;
+        sleep(Duration::from_millis(600));
+        Ok(true)
+    }
+
+    fn login_steps(
+        app: &AXUIElement,
+        account: &str,
+        password: &str,
+        focus: &mut FocusGuard,
+    ) -> Result<bool> {
+        focus.watch();
+        let Some(mut window) = show_login_window(app, focus)? else {
+            return Ok(false);
+        };
+        // At most: the logout notice, then leaving an abandoned QR page (its
+        // close button asks to stop, and confirming closes the window).
+        for _ in 0..3 {
+            dismiss_login_sheet(&window)?;
+            if super::login_screen(&static_texts(&snapshot_shallow(&window)?))
+                != super::LoginScreen::Qr
+            {
+                break;
+            }
+            let close = attr_as_element(&window, "AXCloseButton")
+                .ok_or_else(|| anyhow!("the QR sign-in page has no close button"))?;
+            close
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|error| anyhow!("could not leave the QR sign-in page: {error:?}"))?;
+            sleep(Duration::from_millis(600));
+            dismiss_login_sheet(&window)?;
+            let Some(again) = show_login_window(app, focus)? else {
+                return Ok(false);
+            };
+            window = again;
+        }
+
+        let snap = snapshot_shallow(&window)?;
+        let mut fields = Vec::new();
+        snap.find_all("AXTextField", &mut fields);
+        let is_secure = |field: &AxNode| {
+            attr_as_string(&field.element, "AXSubrole").as_deref() == Some("AXSecureTextField")
+        };
+        let (Some(secure), Some(account_field)) = (
+            fields.iter().copied().find(|field| is_secure(field)),
+            fields.iter().copied().find(|field| !is_secure(field)),
+        ) else {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                format!(
+                    "KakaoTalk's sign-in window shows no account/password form: {:?}",
+                    static_texts(&snap)
+                ),
+            ));
+        };
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        let login = buttons
+            .iter()
+            .find(|button| button.title.as_deref() == Some("로그인"))
+            .map(|button| button.element.clone())
+            .ok_or_else(|| anyhow!("the sign-in form has no 로그인 button"))?;
+
+        secure
+            .element
+            .set_value(CFString::new(password).as_CFType())
+            .map_err(|error| anyhow!("could not enter the password: {error:?}"))?;
+        let entered = attr_as_string(&secure.element, "AXValue").map(|v| v.chars().count());
+        if entered != Some(password.chars().count()) {
+            return Err(coded(
+                ErrorCode::LoginNeedsHuman,
+                "the password field did not take the password",
+            ));
+        }
+        let focused: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXFocused"));
+        let selected_text: AXAttribute<CFType> = AXAttribute::new(&CFString::new("AXSelectedText"));
+        account_field
+            .element
+            .set_attribute(&focused, CFBoolean::true_value().as_CFType())
+            .map_err(|error| anyhow!("could not focus the account field: {error:?}"))?;
+        account_field
+            .element
+            .set_value(CFString::new("").as_CFType())
+            .map_err(|error| anyhow!("could not clear the account field: {error:?}"))?;
+        account_field
+            .element
+            .set_attribute(&selected_text, CFString::new(account).as_CFType())
+            .map_err(|error| anyhow!("could not enter the account: {error:?}"))?;
+        let deadline = Instant::now() + COMPOSER_VERIFY_TIMEOUT;
+        loop {
+            let ready = attr_as_string(&account_field.element, "AXValue").as_deref()
+                == Some(account)
+                && attr_as_bool(&login, "AXEnabled") == Some(true);
+            if ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    "the account did not read back or 로그인 stayed disabled",
+                ));
+            }
+            sleep(COMPOSER_VERIFY_POLL_INTERVAL);
+        }
+
+        login
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not press 로그인: {error:?}"))?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            sleep(Duration::from_millis(300));
+            match login_window(app) {
+                None if find_main_window(app).is_ok() => return Ok(true),
+                Some(window) => {
+                    let texts = snapshot_shallow(&window)
+                        .map(|snap| static_texts(&snap))
+                        .unwrap_or_default();
+                    if super::login_screen(&texts) == super::LoginScreen::Rejected {
+                        return Err(coded(
+                            ErrorCode::LoginRejected,
+                            "KakaoTalk rejected the account or password",
+                        ));
+                    }
+                }
+                None => {}
+            }
+            if Instant::now() >= deadline {
+                let texts = login_window(app)
+                    .and_then(|window| snapshot_shallow(&window).ok())
+                    .map(|snap| static_texts(&snap))
+                    .unwrap_or_default();
+                return Err(coded(
+                    ErrorCode::LoginNeedsHuman,
+                    format!("KakaoTalk did not finish signing in within 20s: {texts:?}"),
+                ));
+            }
+        }
+    }
+
     /// `open -g` (background) KakaoTalk by bundle id, wait for its process, and
     /// hand the foreground back if it came forward anyway.
     pub fn launch_kakaotalk_in_background() -> Result<()> {
@@ -6160,8 +6450,8 @@ end run
 #[cfg(target_os = "macos")]
 pub use imp::{
     assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
+    send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -6236,6 +6526,10 @@ mod stub {
         Err(anyhow!("KakaoTalk for macOS can only be launched on macOS"))
     }
 
+    pub fn login_via_ax(_account: &str, _password: &str) -> Result<bool> {
+        Err(anyhow!("ax-login is only supported on macOS"))
+    }
+
     pub fn diagnose(_chat: Option<&str>) -> Vec<super::AxCheck> {
         vec![super::AxCheck {
             name: "AX automation",
@@ -6272,8 +6566,8 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
+    send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must

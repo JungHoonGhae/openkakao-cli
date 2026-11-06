@@ -661,6 +661,22 @@ enum Commands {
         #[command(subcommand)]
         action: SafeSendAction,
     },
+    /// Sign a signed-out KakaoTalk back in from the login keychain (AX, no server login)
+    #[command(
+        long_about = "Sign a signed-out KakaoTalk (for example after a login on another device) back \
+                      in by Accessibility. The password is read from the login keychain item \
+                      `openkakao.kakaotalk`, which you save once with `security add-generic-password \
+                      -s openkakao.kakaotalk -a <account> -w`; it never appears in argv or output. \
+                      The KakaoTalk process must carry Kakao's code signature. A logout notice or an \
+                      abandoned QR page is dismissed only when recognized. A rejected password is \
+                      reported (login_rejected) and never retried. A device check or unknown dialog \
+                      is left to you (login_needs_human)."
+    )]
+    AxLogin {
+        /// KakaoTalk login id (usually the account email); defaults to [ax] login_account
+        #[arg(long)]
+        account: Option<String>,
+    },
     /// Read recent messages via AX automation (no server contact, no local
     /// DB access — scrapes the open KakaoTalk chat window directly)
     AxRead {
@@ -850,6 +866,7 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalEdit { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
+            | Commands::AxLogin { .. }
             | Commands::AxRead { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
@@ -1661,6 +1678,10 @@ fn run(cli: Cli) -> Result<()> {
                 commands::safe_send::cmd_cancel(&intent_id, yes, json)?
             }
         },
+        Commands::AxLogin { account } => commands::ax_login::cmd_ax_login(
+            account.or_else(|| config.ax.login_account.clone()),
+            json,
+        )?,
         Commands::AxRead { chat_name, count } => {
             commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
                 chat_name,
