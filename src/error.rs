@@ -120,6 +120,7 @@ pub enum ErrorCode {
     AxSendDisabled,
     ChatNotAllowed,
     InvalidFile,
+    FileTypeRefused,
     AttachmentUnverified,
     DeliveryUncertain,
 }
@@ -149,6 +150,7 @@ impl ErrorCode {
             Self::AxSendDisabled => "ax_send_disabled",
             Self::ChatNotAllowed => "chat_not_allowed",
             Self::InvalidFile => "invalid_file",
+            Self::FileTypeRefused => "file_type_refused",
             Self::AttachmentUnverified => "attachment_unverified",
             Self::DeliveryUncertain => "delivery_uncertain",
         }
@@ -252,8 +254,12 @@ impl ErrorCode {
             }
             Self::InvalidFile => {
                 "Pass an existing, non-empty regular file with a UTF-8 path. local-send-file takes \
-                 any type up to [ax] max_file_mb (default 300 MiB); local-send-photo takes JPEG or \
-                 PNG image data up to 50 MiB (send other images with local-send-file)."
+                 any type up to [ax] max_file_mb (default 300 MiB); local-send-photo takes JPEG, \
+                 PNG, GIF, WebP or HEIF image data up to 50 MiB (JPEG/PNG only with --fallback-keys)."
+            }
+            Self::FileTypeRefused => {
+                "KakaoTalk's file picker greys out this file type (seen with .bin), so it can never be \
+                 selected. Compress it into a .zip and send that, or pick a document/image type."
             }
             Self::AttachmentUnverified => {
                 "Nothing was sent. Check the chat window in KakaoTalk (close any leftover preview), \

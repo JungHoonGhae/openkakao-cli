@@ -91,6 +91,13 @@ pub struct SafetyConfig {
     /// allowed to send.
     #[serde(default)]
     pub allowed_send_chats: Vec<String>,
+    /// Seconds one successful macOS device-owner authentication (Touch ID or
+    /// password) stays valid for later `local-send*`, `local-reply`,
+    /// `local-edit` and `safe-send approve` runs, sudo-style. 0 (default)
+    /// asks every time; values above 86400 are clamped. Within the window
+    /// anyone with your shell can send to allowlisted chats, so keep it short.
+    #[serde(default)]
+    pub device_owner_auth_grace_secs: u64,
 }
 
 impl Default for SafetyConfig {
@@ -105,6 +112,7 @@ impl Default for SafetyConfig {
             allow_loco_write: false,
             allow_ax_send: false,
             allowed_send_chats: Vec::new(),
+            device_owner_auth_grace_secs: 0,
         }
     }
 }

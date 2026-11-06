@@ -322,7 +322,8 @@ pub fn cmd_init(opts: InitOptions) -> Result<()> {
             eprint!("   KakaoTalk is not running. Launch it in the background now? [y/N] ");
             confirm()?
         } else {
-            true
+            say("   KakaoTalk is not running; a non-interactive run does not launch it (open -g -b com.kakao.KakaoTalkMac, then re-run).".into());
+            false
         };
         if launch {
             crate::ax_send::launch_kakaotalk_in_background()?;
@@ -425,7 +426,9 @@ pub fn cmd_init(opts: InitOptions) -> Result<()> {
                 break target;
             }
         },
-        None => detected,
+        // Non-interactive runs install nothing unless --skill says so: a
+        // script must not download and run npm code on a guess.
+        None => SkillTarget::None,
     };
     let skills = install_skills(&agents_for(target), &home, &env);
     if skills.is_empty() {

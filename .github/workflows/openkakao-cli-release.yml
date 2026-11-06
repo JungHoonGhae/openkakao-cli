@@ -34,7 +34,7 @@ jobs:
         run: cargo test --manifest-path Cargo.toml
 
   build-aarch64:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-darwin
     steps:

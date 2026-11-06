@@ -303,11 +303,21 @@ pub fn cmd_doctor(
         } else {
             CheckStatus::Warn
         },
-        detail: format!(
-            "allow_ax_send={}, {} allowlisted chat(s)",
-            config.safety.allow_ax_send,
-            config.safety.allowed_send_chats.len()
-        ),
+        detail: {
+            let mut detail = format!(
+                "allow_ax_send={}, {} allowlisted chat(s), device-owner auth grace {}s",
+                config.safety.allow_ax_send,
+                config.safety.allowed_send_chats.len(),
+                config.safety.device_owner_auth_grace_secs
+            );
+            if let Some(left) = openkakao_cli::human_auth::device_owner_auth_grace_left() {
+                detail.push_str(&format!(
+                    " ({}s left before the next prompt)",
+                    left.as_secs()
+                ));
+            }
+            detail
+        },
         fix: (!config.safety.allow_ax_send || config.safety.allowed_send_chats.is_empty())
             .then(|| "openkakao-cli init --allow-chat \"<exact chat name>\"".to_string()),
         ..Default::default()

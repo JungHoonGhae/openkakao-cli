@@ -720,7 +720,7 @@ enum Commands {
                       do this only with --all-spaces). Safe to re-run."
     )]
     Init {
-        /// Non-interactive: accept defaults (skill target = detected agents)
+        /// Non-interactive: accept defaults (no skill unless --skill is passed; KakaoTalk is not launched)
         #[arg(long, short = 'y')]
         yes: bool,
         /// Where to install the agent skill
@@ -878,6 +878,9 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let config = load_config()?;
+    openkakao_cli::human_auth::set_device_owner_auth_grace(
+        config.safety.device_owner_auth_grace_secs,
+    );
     ax_send::set_policy(ax_send::AxPolicy {
         wait_idle: std::time::Duration::from_secs(
             cli.wait_idle

@@ -341,6 +341,36 @@ fn should_restore_focus(previous: Option<i32>, current: Option<i32>, kakao_pid: 
     matches!((previous, current), (Some(previous), Some(current)) if previous != kakao_pid && current == kakao_pid)
 }
 
+/// Whether an `AXStaticText` value is KakaoTalk's upload-progress label. A file
+/// still uploading shows its name, this label and a 취소 button; the share
+/// button, size and validity appear only once the upload is done.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_uploading_label(value: &str) -> bool {
+    let value = value.trim().trim_end_matches(['…', '.']).trim();
+    matches!(value, "업로드 중" | "Uploading" | "uploading")
+}
+
+/// Whether an `AXStaticText` value is a message's clock label ("오후 5:18",
+/// "14:32", "2:05 PM"), as opposed to a file name, size or other text.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_clock_label(value: &str) -> bool {
+    let mut rest = value.trim();
+    for marker in ["오전", "오후", "AM", "PM", "am", "pm"] {
+        rest = rest
+            .strip_prefix(marker)
+            .or_else(|| rest.strip_suffix(marker))
+            .map(str::trim)
+            .unwrap_or(rest);
+    }
+    let Some((hours, minutes)) = rest.split_once(':') else {
+        return false;
+    };
+    let digits = |text: &str, max: usize| {
+        !text.is_empty() && text.len() <= max && text.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    digits(hours, 2) && minutes.len() == 2 && digits(minutes, 2)
+}
+
 /// The single window a signed-out KakaoTalk shows (it reuses the
 /// `Main Window` identifier). Only `로그인` is verified on 26.9.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -878,6 +908,41 @@ mod policy_tests {
             placeholder: placeholder.map(str::to_string),
             outgoing,
             mentions_filename: mentions,
+        }
+    }
+
+    #[test]
+    fn upload_progress_labels_are_recognized() {
+        for label in ["업로드 중", "업로드 중...", "업로드 중…", "Uploading…"] {
+            assert!(is_uploading_label(label), "{label}");
+        }
+        for text in ["업로드", "openkakao-큰파일-30MB.zip", "용량: 30.0MB", ""] {
+            assert!(!is_uploading_label(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn clock_labels_are_recognized() {
+        for label in [
+            "오후 5:18",
+            "오전 11:02",
+            "14:32",
+            "2:05 PM",
+            "AM 9:00",
+            " 9:41 ",
+        ] {
+            assert!(is_clock_label(label), "{label}");
+        }
+        for text in [
+            "openkakao-시험.txt",
+            "용량: 42.0bytes",
+            "유효기간: ~2026. 11. 20.",
+            "2026. 11. 6.",
+            "1:2",
+            "123:45",
+            "",
+        ] {
+            assert!(!is_clock_label(text), "{text}");
         }
     }
 
@@ -1422,6 +1487,12 @@ mod imp {
     const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(200);
     const COMPOSER_VERIFY_TIMEOUT: Duration = Duration::from_secs(1);
     const COMPOSER_VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+    /// How long an unchanged open-panel list is given to reload after a
+    /// sidebar click when no path popup can confirm the folder.
+    const LIST_RELOAD_SETTLE: Duration = Duration::from_millis(1500);
+    /// How long a verified send waits for KakaoTalk to finish uploading before
+    /// a staged copy in ~/Downloads is removed (it is kept on timeout).
+    const UPLOAD_FINISH_TIMEOUT: Duration = Duration::from_secs(300);
     const SNAPSHOT_MAX_DEPTH: usize = 128;
     const SNAPSHOT_MAX_NODES: usize = 20_000;
     // A large chat list can exceed five seconds on newer KakaoTalk/macOS builds.
@@ -1718,6 +1789,11 @@ mod imp {
         started_at: Instant,
         nodes: usize,
         visited: HashSet<usize>,
+        /// Every admitted element, kept alive for the walk. `visited` compares
+        /// object addresses, and a fresh `AXChildren` copy reuses the address
+        /// of one that was already dropped: without this, every open-panel
+        /// row after the first read as "already visited" and lost its label.
+        retained: Vec<AXUIElement>,
         exhausted: bool,
     }
 
@@ -1727,6 +1803,7 @@ mod imp {
                 started_at: Instant::now(),
                 nodes: 0,
                 visited: HashSet::new(),
+                retained: Vec::new(),
                 exhausted: false,
             }
         }
@@ -1737,6 +1814,7 @@ mod imp {
             if !self.visited.insert(element.as_concrete_TypeRef() as usize) {
                 return false;
             }
+            self.retained.push(element.clone());
             if depth > SNAPSHOT_MAX_DEPTH
                 || self.nodes >= SNAPSHOT_MAX_NODES
                 || self.started_at.elapsed() >= SNAPSHOT_MAX_DURATION
@@ -2222,8 +2300,12 @@ mod imp {
             }
         }
 
+        /// Hand the foreground back if KakaoTalk holds it, and keep watching:
+        /// the device-owner authentication dialog can activate KakaoTalk when
+        /// it closes (seen 2026-11-06 after its open-panel sheet and bubble
+        /// menus), so the restore after the commit must still be armed.
         fn restore(&mut self) {
-            if !std::mem::take(&mut self.armed) {
+            if !self.armed {
                 return;
             }
             let current = frontmost_pid();
@@ -2771,6 +2853,14 @@ end run
     /// else may be done.
     fn show_context_menu(app: &AXUIElement, element: &AXUIElement) -> Result<Option<AXUIElement>> {
         let pid = app_pid(app);
+        // A menu already showing is the user's (or a leftover): acting on it
+        // could press 답장 or 채팅방 열기 for the wrong target, so refuse.
+        if pid.is_some_and(|pid| !menu_windows(pid).is_empty()) {
+            return Err(coded(
+                ErrorCode::UserActive,
+                "a KakaoTalk menu is already open; close it by clicking elsewhere (never Esc) and retry",
+            ));
+        }
         // AXShowMenu can report an error (e.g. a timeout) after opening the
         // menu anyway, so look for it regardless; the caller then closes it.
         if let Err(error) = element.perform_action(&CFString::new("AXShowMenu")) {
@@ -2799,6 +2889,30 @@ end run
             }
             sleep(Duration::from_millis(100));
         }
+    }
+
+    /// The mouse cursor in global display coordinates, if readable.
+    fn mouse_location() -> Option<(f64, f64)> {
+        use core_graphics::event::CGEvent;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+        let point = CGEvent::new(source).ok()?.location();
+        Some((point.x, point.y))
+    }
+
+    /// Whether the cursor is over one of KakaoTalk's menu-layer windows, where
+    /// a click of the user's could land on the item about to be pressed or a
+    /// destructive neighbour (삭제, 채팅방 나가기).
+    fn cursor_over_menu(app: &AXUIElement) -> bool {
+        let Some(pid) = app_pid(app) else {
+            return false;
+        };
+        let Some((x, y)) = mouse_location() else {
+            return false;
+        };
+        menu_windows(pid).iter().any(|(left, top, width, height)| {
+            x >= *left && x <= left + width && y >= *top && y <= top + height
+        })
     }
 
     /// Wait (bounded) until no KakaoTalk menu-layer window is on screen, so a
@@ -2872,6 +2986,13 @@ end run
                 ),
             ));
         };
+        if cursor_over_menu(app) {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::UserActive,
+                "the mouse cursor is over the chat-list row's context menu; 채팅방 열기 was not pressed",
+            ));
+        }
         let pressed = item
             .perform_action(&CFString::new(kAXPressAction))
             .map_err(|error| anyhow!("could not press 채팅방 열기: {error:?}"));
@@ -3435,13 +3556,63 @@ end run
             .collect())
     }
 
+    /// The row's upload-progress label (an outgoing file still uploading).
+    fn uploading_label(row: &AxNode) -> Option<&AxNode> {
+        let mut texts = Vec::new();
+        row.find_all("AXStaticText", &mut texts);
+        texts
+            .into_iter()
+            .find(|node| node.value.as_deref().is_some_and(super::is_uploading_label))
+    }
+
+    /// The row's clock label, if one of its static texts reads like a time.
+    fn time_label(row: &AxNode) -> Option<&AxNode> {
+        let mut texts = Vec::new();
+        row.find_all("AXStaticText", &mut texts);
+        texts
+            .into_iter()
+            .find(|node| node.value.as_deref().is_some_and(super::is_clock_label))
+    }
+
+    /// A text bubble is outgoing when it sits right of the table's center. A
+    /// placeholder row (file or photo) has no bubble to measure: KakaoTalk 26.9
+    /// draws a file as a share button, name, validity and size texts and open
+    /// buttons that straddle the center, so its clock label decides, drawn
+    /// left of outgoing bubbles and right of incoming ones (measured
+    /// 2026-11-06).
+    fn row_is_outgoing(row: &AxNode, bubble: &AxNode, table_center: Option<f64>) -> bool {
+        // Only our own files show an upload in progress.
+        if uploading_label(row).is_some() {
+            return true;
+        }
+        let Some(table_center) = table_center else {
+            return false;
+        };
+        let bubble_center = bubble.center_x();
+        match (
+            bubble.role.as_str(),
+            time_label(row).and_then(AxNode::center_x),
+        ) {
+            ("AXTextArea", _) => bubble_center.is_some_and(|x| x > table_center),
+            (_, Some(time_center)) => time_center < table_center,
+            // A file row's share button sits on the outer side: left of an
+            // outgoing bubble (measured), hence right of an incoming one.
+            ("AXButton", None) => bubble_center.is_some_and(|x| x < table_center),
+            (_, None) => bubble_center.is_some_and(|x| x > table_center),
+        }
+    }
+
     fn message_from_row(row: &AxNode, table_center_x: Option<f64>) -> Option<AxMessage> {
         let (text, bubble) = message_row_text(row)?;
-        let outgoing = table_center_x
-            .zip(bubble.center_x())
-            .is_some_and(|(table_center, bubble_center)| bubble_center > table_center);
-        let time = row
-            .find_first("AXStaticText")
+        let outgoing = row_is_outgoing(row, bubble, table_center_x);
+        // Same-minute messages show the clock only on the last one; a file
+        // row's other texts (name, validity, size) are never a time.
+        let time = time_label(row)
+            .or_else(|| {
+                (bubble.role == "AXTextArea")
+                    .then(|| row.find_first("AXStaticText"))
+                    .flatten()
+            })
             .and_then(|t| t.help.clone().or_else(|| t.value.clone()));
         Some(AxMessage {
             time,
@@ -3492,22 +3663,18 @@ end run
         Ok((
             total,
             rows.iter()
-                .map(|row| {
-                    let classified = message_row_text(row);
-                    let outgoing = classified.as_ref().is_some_and(|(_, bubble)| {
-                        center.zip(bubble.center_x()).is_some_and(
-                            |(table_center, bubble_center)| bubble_center > table_center,
-                        )
-                    });
+                // Message rows only: the table ends with an empty spacer row
+                // (and holds date separators), which would otherwise be the
+                // baseline's "newest row" with nothing ever appended after it.
+                .filter_map(|row| {
+                    let (text, bubble) = message_row_text(row)?;
                     let observation = super::AttachmentObservation {
                         // Typed text that happens to read "[파일]" is not a bubble.
-                        placeholder: classified
-                            .filter(|(_, bubble)| bubble.role != "AXTextArea")
-                            .map(|(text, _)| text),
-                        outgoing,
+                        placeholder: (bubble.role != "AXTextArea").then_some(text),
+                        outgoing: row_is_outgoing(row, bubble, center),
                         mentions_filename: row.any(&shows_filename),
                     };
-                    (row.element.clone(), observation)
+                    Some((row.element.clone(), observation))
                 })
                 .collect(),
         ))
@@ -3534,6 +3701,11 @@ end run
             .find(|button| button.description.as_deref() == Some("공유"))
         {
             return Some((super::FILE_BUBBLE_PLACEHOLDER.to_string(), button));
+        }
+        // A file still uploading has no share button yet (measured 2026-11-06
+        // with a 30 MB file: icon, name, "업로드 중", 취소).
+        if let Some(progress) = uploading_label(row) {
+            return Some((super::FILE_BUBBLE_PLACEHOLDER.to_string(), progress));
         }
 
         None
@@ -3817,7 +3989,7 @@ end run
 
     /// The panel's unique enabled 열기/Open (by title, else `AXDefaultButton`).
     fn wait_for_open_button(panel: &AXUIElement) -> Result<AXUIElement> {
-        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        let deadline = Instant::now() + FILE_PICKER_READY_TIMEOUT;
         loop {
             let buttons = sheet_buttons(panel)?;
             let titled: Vec<_> = buttons
@@ -3884,7 +4056,7 @@ end run
             .perform_action(&CFString::new(kAXPressAction))
             .map_err(|error| anyhow!("could not open KakaoTalk's file picker: {error:?}"))?;
         let result = (|| {
-            let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+            let deadline = Instant::now() + FILE_PICKER_READY_TIMEOUT;
             let panel = loop {
                 if let Some(sheet) = find_file_picker_sheet(window)? {
                     break sheet;
@@ -3895,7 +4067,18 @@ end run
                 sleep(Duration::from_millis(100));
             };
 
-            let (sidebar, _) = open_panel_outlines(&panel)?;
+            let (sidebar, initial_list) = open_panel_outlines(&panel)?;
+            // Names shown before the sidebar click: without a path popup, an
+            // unchanged list may still be the previous folder's (see below).
+            let before_names: Option<Vec<Option<String>>> = match initial_list {
+                Some(list) => Some(
+                    rows_with_label(&list, &["AXTextField"], "open panel file list (initial)")?
+                        .into_iter()
+                        .map(|(_, name)| name.as_deref().map(nfc))
+                        .collect(),
+                ),
+                None => None,
+            };
             let places = rows_with_label(
                 &sidebar,
                 &["AXStaticText", "AXTextField"],
@@ -3920,12 +4103,15 @@ end run
                 );
             };
             select_row_and_verify(place, &format!("the {folder:?} sidebar row"))?;
+            let selected_at = Instant::now();
 
             // The file list reloads for the selected folder. Read it only once
             // the panel's path popup names that folder, so a row of the
-            // previously shown folder is never picked.
+            // previously shown folder is never picked. Without a popup, the
+            // list must differ from the one shown before the click, or settle.
             let target = nfc(filename);
-            let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+            let deadline = Instant::now() + FILE_PICKER_READY_TIMEOUT;
+            let mut last_select_error = None;
             let (list, file_row, strict) = loop {
                 let confirmed = panel_shows_folder(&panel, folder)?;
                 if confirmed != Some(false) {
@@ -3936,28 +4122,53 @@ end run
                             .iter()
                             .map(|(_, name)| name.as_deref().map(nfc))
                             .collect();
-                        match super::pick_list_row(&names, &target) {
+                        let settled = confirmed.is_some()
+                            || before_names.as_ref() != Some(&names)
+                            || selected_at.elapsed() >= LIST_RELOAD_SETTLE;
+                        let picked = match super::pick_list_row(&names, &target) {
+                            _ if !settled => None,
                             // Without a confirmed folder, the preview must also
                             // show the exact file name before anything is sent.
-                            super::ListPick::Exact(index) => {
-                                break (list, rows[index].0.clone(), confirmed.is_none())
-                            }
-                            super::ListPick::Stem(index) => break (list, rows[index].0.clone(), true),
+                            super::ListPick::Exact(index) => Some((index, confirmed.is_none())),
+                            super::ListPick::Stem(index) => Some((index, true)),
                             super::ListPick::Ambiguous(count) => anyhow::bail!(
                                 "{count} open-panel rows match '{filename}' (hidden extensions?); refusing to guess"
                             ),
-                            super::ListPick::NotFound => {}
+                            super::ListPick::NotFound => None,
+                        };
+                        if let Some((index, strict)) = picked {
+                            let row = rows[index].0.clone();
+                            // A just-added file makes the panel reload its list
+                            // (size, icon), which leaves this row element stale:
+                            // re-read the rows and try again until the deadline.
+                            match select_row_and_verify(
+                                &row,
+                                &format!("'{filename}' in the open panel"),
+                            ) {
+                                Ok(()) => break (list, row, strict),
+                                Err(error) => last_select_error = Some(error),
+                            }
                         }
                     }
                 }
                 if Instant::now() >= deadline {
-                    anyhow::bail!(
-                        "the open panel did not list '{filename}' in {folder:?} (it must be in list view, with every name readable)"
-                    );
+                    return Err(match last_select_error {
+                        // Listed but never selectable: KakaoTalk greys out file
+                        // types it does not accept (measured with .bin, while
+                        // the same bytes as .zip, and .txt/.docx, select).
+                        Some(error) => coded(
+                            ErrorCode::FileTypeRefused,
+                            format!(
+                                "the open panel lists '{filename}' but never selects it ({error}); KakaoTalk's picker greys out file types it does not accept"
+                            ),
+                        ),
+                        None => anyhow!(
+                            "the open panel did not list '{filename}' in {folder:?} (it must be in list view, with every name readable)"
+                        ),
+                    });
                 }
                 sleep(Duration::from_millis(150));
             };
-            select_row_and_verify(&file_row, &format!("'{filename}' in the open panel"))?;
             let selected_rows: AXAttribute<CFType> =
                 AXAttribute::new(&CFString::new("AXSelectedRows"));
             if let Some(selected) = list
@@ -4214,6 +4425,19 @@ end run
                                 kind,
                             ) {
                                 trace(started, &format!("delivery verified by {verified_by}"));
+                                // KakaoTalk reads the staged copy while it uploads;
+                                // remove it only once the bubble stops saying so.
+                                if let Some(staged) = staged.as_mut() {
+                                    if !wait_for_upload_to_finish(&elements.message_table) {
+                                        staged.keep = true;
+                                        eprintln!(
+                                            "KakaoTalk is still uploading after {}s; the staged copy at {} was kept, delete it once the upload finishes",
+                                            UPLOAD_FINISH_TIMEOUT.as_secs(),
+                                            staged.path.display()
+                                        );
+                                    }
+                                    trace(started, "upload finished (staged copy may go)");
+                                }
                                 return Ok(super::AttachmentReceipt {
                                     verified_by,
                                     preview_shows_filename,
@@ -4252,6 +4476,25 @@ end run
                 kept.unwrap_or_default()
             ),
         ))
+    }
+
+    /// `true` once no row in the message tail shows an upload in progress,
+    /// `false` after [`UPLOAD_FINISH_TIMEOUT`] or when the tail cannot be read.
+    fn wait_for_upload_to_finish(table: &AXUIElement) -> bool {
+        let deadline = Instant::now() + UPLOAD_FINISH_TIMEOUT;
+        loop {
+            let mut seen = 0;
+            let uploading = tail_rows(table, |_| {
+                seen += 1;
+                seen >= DELIVERY_TAIL_ROWS
+            })
+            .map(|(rows, _)| rows.iter().any(|row| uploading_label(row).is_some()));
+            match uploading {
+                Ok(false) => return true,
+                Ok(true) if Instant::now() < deadline => sleep(Duration::from_secs(1)),
+                _ => return false,
+            }
+        }
     }
 
     /// KakaoTalk's attachment preview for the pasted file and its send
@@ -4391,6 +4634,7 @@ end run
         // prompt. At this point the signed process, exact window, empty
         // composer, and pre-send bubble baseline are all known; authentication
         // happens immediately before the composer is changed.
+        focus.watch();
         let authenticated_target =
             crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
         openkakao_cli::human_auth::require_device_owner_auth(&format!(
@@ -4757,6 +5001,15 @@ end run
                 ),
             ));
         };
+        if cursor_over_menu(app) {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::UserActive,
+                format!(
+                    "the mouse cursor is over the message's context menu; '{item}' was not pressed"
+                ),
+            ));
+        }
         let pressed = entry
             .perform_action(&CFString::new(kAXPressAction))
             .map_err(|error| anyhow!("could not press '{item}': {error:?}"));
@@ -4851,6 +5104,7 @@ end run
         if dry_run {
             return Ok(action);
         }
+        focus.watch();
         let authenticated_target =
             crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
         openkakao_cli::human_auth::require_device_owner_auth(&format!(
@@ -4934,6 +5188,7 @@ end run
         if dry_run {
             return Ok(action);
         }
+        focus.watch();
         let authenticated_target =
             crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
         openkakao_cli::human_auth::require_device_owner_auth(&format!(

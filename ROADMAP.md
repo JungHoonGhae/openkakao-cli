@@ -107,6 +107,27 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
   chat window. Lookups take the message table before any insertion, but
   `ax-read` on a window with a pending `@` draft could pick the wrong table.
 
+### Follow-ups from the 2026-11-06 device run
+
+- Verify that a context menu opened with `AXShowMenu` belongs to the target
+  element (its menu-layer window should touch the element's frame); today a
+  pre-existing menu is refused and a cursor over the menu aborts the press.
+- Anchor text-send verification on the baseline's newest row by identity, as
+  the attachment path does, so a repeated short message pushed out of the
+  12-row tail cannot read as `delivery_uncertain`.
+- A closed 1:1 chat with no row in the chat list (friends tab, or
+  `kakaotalk://friend?action=chat`) and mentions remain unimplemented.
+- A same-name file removed and recreated in ~/Downloads while KakaoTalk's picker
+  still knew the old entry never selected again (seen once after a manual
+  cleanup, not reproduced); the CLI's own staging never does this, it refuses
+  with `staging_conflict` instead.
+- KakaoTalk's picker greys out some file types (`.bin` measured, `.zip` of the
+  same bytes selects); `file_type_refused` reports it only after the 30 s
+  selection deadline because AX does not expose the row's enabled state.
+- KakaoTalk 26.9 draws a file bubble as a share button, the file name,
+  validity and size texts and open buttons (no text area or image); `ax-read`
+  shows it as `[파일]` with the clock label as the time.
+
 ## Message actions on an open chat window (reply/edit experimental, delete designed)
 
 The measured building blocks: each bubble row is `AXRow > AXCell (AXShowMenu) >

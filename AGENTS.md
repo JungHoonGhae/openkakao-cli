@@ -56,7 +56,9 @@ openkakao-cli react <chat_id> <log_id> --json
 `allow_ax_send = true`, an exact `allowed_send_chats` match, an interactive
 terminal, the proposal's 12-character approval code, and macOS device-owner
 authentication (Touch ID or login password). Direct real `local-send` and
-`local-send-photo` use the same OS authentication. Agents stop after
+`local-send-photo` use the same OS authentication; the opt-in `[safety]
+device_owner_auth_grace_secs` (default 0) reuses one approval for that many
+seconds, sudo-style, and only the human sets it. Agents stop after
 `safe-send propose`; a human reviews and approves. There is no unattended
 approval mode. An `uncertain` result is inspected in KakaoTalk and
 never retried automatically.
@@ -189,5 +191,5 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
 `composer_busy`, `message_not_found`, `message_ambiguous`, `action_unverified`,
 `user_active`, `ax_send_disabled`, `chat_not_allowed`, `invalid_file`,
-`attachment_unverified`, `delivery_uncertain`. Never retry a
+`attachment_unverified`, `file_type_refused`, `delivery_uncertain`. Never retry a
 `delivery_uncertain` send automatically.
