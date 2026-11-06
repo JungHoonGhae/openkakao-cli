@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.10.0] - 2026-11-06
 
 ### Added
 - **`local-send-file <chat_name> <file>`** sends any regular file (docx, xlsx, pdf, zip, txt, images) through the official KakaoTalk app with no server login. The path is validated before any automation: it must exist, resolve (symlinks included) to a non-empty regular file with a UTF-8 path, and fit `[ax] max_file_mb` (default 300 MiB). The default route uses Accessibility only (verified on KakaoTalk 26.9.0, macOS 26): it presses the chat's `파일전송` button, selects the open panel's sidebar folder and the exact file row (NFC-normalized, hidden extensions handled, duplicates refused), presses `열기`, and after macOS device-owner authentication presses the preview's `1개 전송` / `Send 1 files` (any other count refuses). A file outside the top level of Desktop/Documents/Downloads is hard-linked (copied across volumes) into `~/Downloads` under its own name, never overwriting anything, and removed after a verified send. Delivery is proven by a new outgoing row showing the file name or a `[파일]`/`[사진]` placeholder, reported as `verified_by` in JSON. The command uses the same `allow_ax_send`, exact allowlist, `--dry-run` and `-y` gates as `local-send`, and any failure after the picker opens cancels the sheet.
