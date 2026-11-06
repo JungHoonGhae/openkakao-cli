@@ -322,7 +322,7 @@ fn local_send_photo_dry_run_rejects_spoofed_and_missing_files() {
 }
 
 #[test]
-fn local_send_photo_real_send_is_blocked_until_allowlisted_and_confirmed() {
+fn local_send_photo_flags_unlisted_chats_and_stops_at_confirmation() {
     let home = tempfile::tempdir().unwrap();
     let config_dir = home.path().join(".config").join("openkakao");
     std::fs::create_dir_all(&config_dir).unwrap();
@@ -334,14 +334,19 @@ fn local_send_photo_real_send_is_blocked_until_allowlisted_and_confirmed() {
     let photo = home.path().join("vacation.png");
     write_png(&photo);
 
-    // Not allowlisted: refuse before any KakaoTalk interaction.
+    // Not allowlisted: flagged as needing device-owner authentication, and a
+    // declined confirmation still never reaches AX automation.
     cmd()
         .env("HOME", home.path())
         .args(["local-send-photo", "Kim Chiang"])
         .arg(&photo)
+        .write_stdin("n\n")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not in the local-send allowlist"));
+        .success()
+        .stdout(predicate::str::contains("Cancelled."))
+        .stderr(predicate::str::contains(
+            "NOT in [safety] allowed_send_chats",
+        ));
 
     // Allowlisted but declined at the confirmation prompt: cancel cleanly
     // without ever reaching AX automation (safe on any runner OS).

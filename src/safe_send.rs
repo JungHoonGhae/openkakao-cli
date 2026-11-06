@@ -292,9 +292,10 @@ impl SafeSendOutbox {
                      WHERE intent_id = ?1 AND state = 'sending'",
                     params![intent_id, reason],
                 )?;
-                anyhow::bail!(
-                    "safe-send outcome is uncertain; inspect KakaoTalk and do not retry automatically"
-                );
+                return Err(crate::error::coded(
+                    crate::error::ErrorCode::DeliveryUncertain,
+                    "safe-send outcome is uncertain; inspect KakaoTalk and do not retry automatically",
+                ));
             }
         }
 

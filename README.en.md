@@ -192,7 +192,7 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/skills@openka
 - Send to memo chat with `send --me` for quick testing
 - LOCO write ops disabled by default — opt in with `safety.allow_loco_write = true`
 - `local-send`/`local-send-photo` also disabled by default — opt in with `safety.allow_ax_send = true` plus a `safety.allowed_send_chats` allowlist
-- Prefer `safe-send` for agent-driven sends — proposals only touch a local outbox and actual approval requires both a human at an interactive terminal and macOS Touch ID/login-password authentication
+- Prefer `safe-send` for agent-driven sends — proposals only touch a local outbox and actual approval requires a human at an interactive terminal; a chat outside the allowlist is flagged ⚠ and also needs macOS Touch ID/login-password authentication
 
 ## Where It Fits
 
@@ -212,7 +212,7 @@ To protect your account, commands that write to the server require explicit opt-
 allow_loco_write = true
 ```
 
-`local-send`, `local-send-file` and `local-send-photo` (AX-based real sending) are also disabled by default (`local-send` since v1.4.0), and need their own opt-in plus a **chat allowlist** (`openkakao-cli init --allow-chat "<name>"`). There is no chat-id left to cross-check the target against, so a real send combines the allowlist with exactly one open chat window titled exactly like the chat (or, when `--open-if-needed` opens it, one unique exact-name chat-list row), KakaoTalk code-signature verification, and macOS user authentication immediately before sending:
+`local-send`, `local-send-file` and `local-send-photo` (AX-based real sending) are also disabled by default (`local-send` since v1.4.0), and need their own opt-in. A chat listed by its exact name in the **chat allowlist** (`openkakao-cli init --allow-chat "<name>"`) counts as approved in advance, so sends to it ask for no authentication. Any other chat is flagged `⚠ NOT in [safety] allowed_send_chats` and needs macOS user authentication (Touch ID or login password) immediately before sending. There is no chat-id left to cross-check the target against, so a real send also requires exactly one open chat window titled exactly like the chat (or, when `--open-if-needed` opens it, one unique exact-name chat-list row) and KakaoTalk code-signature verification:
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -230,15 +230,15 @@ openkakao-cli safe-send propose "chat display name" "message to review"
 # 2. Inspect proposed and uncertain intents
 openkakao-cli safe-send list
 
-# 3. A human reviews the exact target/message, types the 12-character code,
-#    then approves with macOS Touch ID or the login password
+# 3. A human reviews the exact target/message and types the 12-character code
+#    (a chat outside the allowlist also needs Touch ID or the login password)
 openkakao-cli safe-send approve <intent_id>
 
 # Discard an intent
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires both the interactive 12-character code and macOS device-owner authentication. A direct real `local-send` or `local-send-photo` requires the same OS authentication. With `[safety] device_owner_auth_grace_secs` (default 0) one approval stays valid for that many seconds, sudo-style (max 900). The approval time is a file your account can write, so during the window any local process (a shell, an agent) can send to allowlisted chats or extend the window; enable it only on a Mac where every local process is yours. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the commit (the `전송` press, or Return with `--fallback-keys`) is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after the commit may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, duplicate exact-title windows or chat-list rows are refused, and a non-empty composer is refused. The target window and composer are read back immediately before the commit, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
+Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires the interactive 12-character code. A chat outside the allowlist also needs macOS device-owner authentication, as a direct `local-send*`, `local-reply` or `local-edit` to it does. The allowlist is a config file your account can write, so any local process (a shell, an agent) can send to the chats in it without authentication; list only chats that may receive such sends. With `[safety] device_owner_auth_grace_secs` (default 0) one approval stays valid for that many seconds, sudo-style (max 900). The approval time is a file your account can write, so during the window any local process (a shell, an agent) can send to allowlisted chats or extend the window; enable it only on a Mac where every local process is yours. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the commit (the `전송` press, or Return with `--fallback-keys`) is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after the commit may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, duplicate exact-title windows or chat-list rows are refused, and a non-empty composer is refused. The target window and composer are read back immediately before the commit, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
 
 This path is implemented directly with macOS Accessibility/CoreGraphics inside `openkakao-cli`. Orca and agent `$computer-use` skills are not installation or runtime dependencies; agents use the domain-level `safe-send propose` plus human approval instead of generic UI click or keyboard actions.
 
@@ -269,7 +269,7 @@ Read-only operations are always available:
 
 ## Troubleshooting
 
-With `--json`, failures print `{"error": {"code", "message", "fix"}}` on stdout. `doctor` (read-only) checks the same things up front.
+With `--json`, failures print `{"error": {"code", "message", "fix", "disposition"}}` on stdout. Only `disposition.retry: "safe"` (`delivery: "not_delivered"`) can be retried as-is without a duplicate send; on `uncertain` or `unknown`, check KakaoTalk first. `doctor` (read-only) checks the same things up front.
 
 | code | Cause | Fix |
 |------|-------|-----|

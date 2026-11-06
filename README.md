@@ -189,7 +189,7 @@ openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/skills@op
 - `send --me`로 나와의 채팅에 바로 전송 (테스트용)
 - LOCO write 기본 비활성 — `safety.allow_loco_write = true`로 opt-in
 - `local-send`/`local-send-photo`도 기본 비활성 — `safety.allow_ax_send = true` + `safety.allowed_send_chats` 화이트리스트로 opt-in
-- 에이전트 전송에는 `safe-send` 권장 — 제안은 로컬 Outbox에만 저장되고 실제 승인은 사람의 대화형 터미널과 macOS Touch ID/로그인 암호 인증을 모두 요구
+- 에이전트 전송에는 `safe-send` 권장 — 제안은 로컬 Outbox에만 저장되고 실제 승인은 사람의 대화형 터미널을 요구. 화이트리스트에 없는 방은 ⚠ 표시와 함께 macOS Touch ID/로그인 암호 인증도 요구
 
 ## 이런 경우에 잘 맞습니다
 
@@ -209,7 +209,7 @@ v1.1.0부터 LOCO write 작업(send, delete, edit, react)은 **기본 비활성*
 allow_loco_write = true
 ```
 
-`local-send`, `local-send-file`, `local-send-photo`(AX 기반 실전송)도 기본 비활성입니다(`local-send`는 v1.4.0부터). 별도로 opt-in과 **채팅방 화이트리스트**가 필요합니다(`openkakao-cli init --allow-chat "<이름>"`). 로컬 DB의 chat-id로 대상을 다시 검증할 수 없으므로, 실전송은 다음을 모두 요구합니다: 화이트리스트, 제목이 정확히 일치하는 열린 채팅 창 하나(같은 제목 창이 둘 이상이면 거부. `--open-if-needed`로 새로 열 때는 채팅 목록에서 정확히 일치하는 행 하나), 카카오톡 코드서명, 전송 직전 macOS 사용자 인증:
+`local-send`, `local-send-file`, `local-send-photo`(AX 기반 실전송)도 기본 비활성입니다(`local-send`는 v1.4.0부터). 별도로 opt-in이 필요하고, **채팅방 화이트리스트**(`openkakao-cli init --allow-chat "<이름>"`)에 정확한 이름으로 등록한 방은 사람이 미리 승인한 것으로 보아 매번 인증하지 않습니다. 화이트리스트에 없는 방은 `⚠ NOT in [safety] allowed_send_chats`로 표시되고, 전송 직전 macOS 사용자 인증(Touch ID 또는 로그인 암호)을 통과해야 합니다. 로컬 DB의 chat-id로 대상을 다시 검증할 수 없으므로, 실전송은 이 밖에도 다음을 요구합니다: 제목이 정확히 일치하는 열린 채팅 창 하나(같은 제목 창이 둘 이상이면 거부. `--open-if-needed`로 새로 열 때는 채팅 목록에서 정확히 일치하는 행 하나), 카카오톡 코드서명:
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -227,15 +227,15 @@ openkakao-cli safe-send propose "채팅방 표시 이름" "검토할 메시지"
 # 2. 활성 제안과 uncertain 상태 확인
 openkakao-cli safe-send list
 
-# 3. 사람이 실제 터미널에서 대상·내용을 검토하고 12자리 코드를 입력한 뒤
-#    macOS Touch ID 또는 로그인 암호로 승인
+# 3. 사람이 실제 터미널에서 대상·내용을 검토하고 12자리 코드를 입력해 승인
+#    (화이트리스트에 없는 방이면 macOS Touch ID 또는 로그인 암호도 요구)
 openkakao-cli safe-send approve <intent_id>
 
 # 폐기
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드와 macOS device-owner 인증을 모두 통과해야 합니다. 직접 `local-send`·`local-send-photo`로 실전송할 때도 같은 OS 인증이 필요합니다. `[safety] device_owner_auth_grace_secs`(기본 0)를 켜면 한 번 인증한 뒤 그 초 동안은 다시 묻지 않습니다(sudo 방식, 최대 900초). 승인 시각은 내 계정이 쓸 수 있는 파일이라 그동안은 이 Mac의 어떤 로컬 프로세스(셸·에이전트)든 허용 목록 채팅에 보내거나 창을 연장할 수 있습니다. 모든 로컬 프로세스가 내 것인 Mac에서만 켭니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 커밋(`전송` 버튼, `--fallback-keys`에서는 Return) 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, 커밋 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 같은 제목의 열린 창이나 같은 표시 이름의 채팅 목록 행이 둘 이상이면 거부합니다. 대상 창과 입력값을 커밋 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
+제안은 15분 후 만료되며 `~/.config/openkakao/safe_send_outbox.db`(권한 `0600`)에 저장됩니다. 승인에는 unattended 우회가 없고, 대화형 터미널의 12자리 코드를 통과해야 합니다. 화이트리스트에 없는 방은 직접 `local-send*`·`local-reply`·`local-edit`와 마찬가지로 macOS device-owner 인증도 필요합니다. 화이트리스트는 내 계정이 쓸 수 있는 설정 파일이므로, 등록한 방에는 이 Mac의 로컬 프로세스(셸·에이전트)가 인증 없이 보낼 수 있습니다. 정말 보내도 되는 방만 등록합니다. `[safety] device_owner_auth_grace_secs`(기본 0)를 켜면 한 번 인증한 뒤 그 초 동안은 다시 묻지 않습니다(sudo 방식, 최대 900초). 승인 시각은 내 계정이 쓸 수 있는 파일이라 그동안은 이 Mac의 어떤 로컬 프로세스(셸·에이전트)든 허용 목록 채팅에 보내거나 창을 연장할 수 있습니다. 모든 로컬 프로세스가 내 것인 Mac에서만 켭니다. 전송 claim 간 최소 10초, 방별 시간당 3건, 전체 시간당 10건·일일 20건을 넘길 수 없습니다. 최종 커밋(`전송` 버튼, `--fallback-keys`에서는 Return) 이전에 실패했음이 확실하면 `not_sent`로 분류해 제안을 다시 검토할 수 있고, 커밋 이후 결과가 애매하거나 실행이 중단되면 `uncertain`으로 격리되어 자동 재시도하지 않습니다. 실행 중인 앱은 공식 KakaoTalk 번들·팀 코드서명으로 확인하고, 같은 제목의 열린 창이나 같은 표시 이름의 채팅 목록 행이 둘 이상이면 거부합니다. 대상 창과 입력값을 커밋 직전에 다시 읽어 확인하며, 입력창이 비워지면서 동일 내용의 새 **발신** 메시지 버블이 증가한 경우만 전송 완료로 인정합니다.
 
 이 경로는 `openkakao-cli`가 macOS Accessibility/CoreGraphics를 직접 호출하는 네이티브 구현입니다. Orca나 에이전트의 `$computer-use` 스킬은 설치·실행에 필요하지 않으며, 범용 UI 클릭/키 입력 대신 `safe-send propose`와 사람의 승인 interface를 사용합니다.
 
@@ -266,7 +266,7 @@ openkakao-cli safe-send cancel <intent_id>
 
 ## 문제 해결
 
-`--json` 실패는 stdout에 `{"error": {"code", "message", "fix"}}` 형태로 나옵니다. `doctor`(읽기 전용)로 같은 항목을 먼저 확인할 수 있습니다.
+`--json` 실패는 stdout에 `{"error": {"code", "message", "fix", "disposition"}}` 형태로 나옵니다. `disposition.retry`가 `safe`(`delivery: not_delivered`)일 때만 그대로 재시도해도 중복 전송이 없습니다. `uncertain`과 `unknown`은 카카오톡을 먼저 확인합니다. `doctor`(읽기 전용)로 같은 항목을 먼저 확인할 수 있습니다.
 
 | code | 원인 | 해결 |
 |------|------|------|

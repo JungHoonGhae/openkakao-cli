@@ -84,6 +84,25 @@ pub(crate) fn match_chat_row(row_names: &[Option<String>], target: &str) -> Chat
     }
 }
 
+/// The row a human chose with `--pick N` (1-based, top to bottom) among the
+/// rows named exactly `target`; `None` when nothing (valid) was picked.
+// ponytail: the pick is list order at run time, and a new message can reorder
+// unpinned rows between the listing and the pick; bind it to the row's
+// (time, preview) fingerprint if that ever bites.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn picked_row(
+    row_names: &[Option<String>],
+    target: &str,
+    pick: Option<usize>,
+) -> Option<usize> {
+    let mut matches = row_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_deref() == Some(target))
+        .map(|(index, _)| index);
+    matches.nth(pick?.checked_sub(1)?)
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn has_new_exact_outgoing_message(
     before: &[DeliveryObservation],
@@ -97,14 +116,29 @@ pub(crate) fn has_new_exact_outgoing_message(
     after_count > before_count
 }
 
+/// A cleared composer plus a new outgoing exact-text bubble. With the
+/// baseline's newest row found again (`appended_start`, see
+/// [`appended_rows_start`]), one such bubble among the rows appended after it
+/// is enough, so an older identical bubble that scrolls out of the observed
+/// tail cannot turn a real send into `delivery_uncertain`. Without the anchor
+/// the counting rule applies.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn is_verified_delivery(
     before: &[DeliveryObservation],
     after: &[DeliveryObservation],
+    appended_start: Option<usize>,
     target: &str,
     composer_value: Option<&str>,
 ) -> bool {
-    composer_value == Some("") && has_new_exact_outgoing_message(before, after, target)
+    composer_value == Some("")
+        && match appended_start {
+            Some(start) => after
+                .get(start..)
+                .unwrap_or_default()
+                .iter()
+                .any(|row| row.outgoing && row.text == target),
+            None => has_new_exact_outgoing_message(before, after, target),
+        }
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -268,6 +302,8 @@ pub(crate) struct AxPolicy {
     pub open_if_needed: bool,
     /// Commit text with the raise + Return path instead of the `전송` button.
     pub fallback_keys: bool,
+    /// `--pick N`: which exact-name chat-list row to open when several match.
+    pub pick: Option<usize>,
 }
 
 pub(crate) const DEFAULT_WAIT_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -278,8 +314,31 @@ impl Default for AxPolicy {
             wait_idle: DEFAULT_WAIT_IDLE,
             open_if_needed: false,
             fallback_keys: false,
+            pick: None,
         }
     }
+}
+
+/// `[safety] allowed_send_chats`, set once by `main`. Listing a chat there is
+/// the human's standing approval, so AX writes to it skip the per-send
+/// device-owner authentication; any other exact name still needs it. Unset
+/// (no config loaded) means every target needs it.
+static ALLOWED_SEND_CHATS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+pub(crate) fn set_allowed_send_chats(chats: Vec<String>) {
+    let _ = ALLOWED_SEND_CHATS.set(chats);
+}
+
+/// Exact display-name match only: `허용된` never stands for `허용된 방`.
+pub(crate) fn is_allowlisted(allowed: &[String], chat: &str) -> bool {
+    allowed.iter().any(|name| name == chat)
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn needs_device_owner_auth(chat: &str) -> bool {
+    !ALLOWED_SEND_CHATS
+        .get()
+        .is_some_and(|allowed| is_allowlisted(allowed, chat))
 }
 
 static AX_POLICY: std::sync::OnceLock<AxPolicy> = std::sync::OnceLock::new();
@@ -1182,6 +1241,32 @@ mod policy_tests {
     }
 
     #[test]
+    fn pick_chooses_among_exact_duplicates_only() {
+        let names = [
+            Some("귀몬❤️".to_string()),
+            Some("귀몬".to_string()),
+            None,
+            Some("귀몬❤️".to_string()),
+        ];
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(1)), Some(0));
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(2)), Some(3));
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(3)), None);
+        assert_eq!(picked_row(&names, "귀몬❤️", Some(0)), None);
+        assert_eq!(picked_row(&names, "귀몬❤️", None), None);
+    }
+
+    #[test]
+    fn only_an_exact_allowlisted_name_skips_authentication() {
+        let allowed = vec!["허용된 방".to_string()];
+        assert!(is_allowlisted(&allowed, "허용된 방"));
+        assert!(!is_allowlisted(&allowed, "허용된"));
+        assert!(!is_allowlisted(&allowed, "허용된 방 "));
+        assert!(!is_allowlisted(&[], "허용된 방"));
+        // No allowlist loaded: every target authenticates.
+        assert!(needs_device_owner_auth("허용된 방"));
+    }
+
+    #[test]
     fn appended_rows_are_found_by_identity() {
         let same = |a: &u32, b: &u32| a == b;
         assert_eq!(
@@ -1354,16 +1439,69 @@ mod match_tests {
         assert!(!is_verified_delivery(
             &before,
             &after,
+            None,
             "new message",
             Some("new message")
         ));
         assert!(is_verified_delivery(
             &before,
             &after,
+            None,
             "new message",
             Some("")
         ));
-        assert!(!is_verified_delivery(&before, &after, "new message", None));
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            None,
+            "new message",
+            None
+        ));
+    }
+
+    #[test]
+    fn anchored_delivery_survives_a_repeat_scrolling_out_of_the_tail() {
+        let ok = |outgoing| DeliveryObservation {
+            text: "ok".to_string(),
+            outgoing,
+        };
+        // A full tail of earlier "ok"s; the send pushes the oldest one out,
+        // so the count of outgoing "ok" rows stays the same.
+        let before = vec![ok(true), ok(true), ok(true)];
+        let after = vec![ok(true), ok(true), ok(true)];
+        assert!(!is_verified_delivery(&before, &after, None, "ok", Some("")));
+        // The baseline's newest row was found again at index 1: one row appended.
+        assert!(is_verified_delivery(
+            &before,
+            &after,
+            Some(2),
+            "ok",
+            Some("")
+        ));
+        // Nothing appended, or only an incoming copy, proves nothing.
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            Some(3),
+            "ok",
+            Some("")
+        ));
+        let incoming = vec![ok(true), ok(true), ok(false)];
+        assert!(!is_verified_delivery(
+            &before,
+            &incoming,
+            Some(2),
+            "ok",
+            Some("")
+        ));
+        // The composer must still be cleared.
+        assert!(!is_verified_delivery(
+            &before,
+            &after,
+            Some(2),
+            "ok",
+            Some("ok")
+        ));
     }
 
     #[test]
@@ -2673,15 +2811,33 @@ function run(argv) {
                 });
             }
             super::ChatMatch::Ambiguous(count) => {
-                return Err(coded(
-                    ErrorCode::ChatAmbiguous,
-                    format!(
-                        "chat name '{chat_display_name}' matches {count} chats in the visible list — ambiguous, refusing to guess"
-                    ),
-                ));
+                let same_name =
+                    |n: usize| super::picked_row(&row_names, chat_display_name, Some(n));
+                if let Some(index) = super::policy().pick.and_then(same_name) {
+                    // Safety-relevant, so always shown, not only under debug.
+                    eprintln!(
+                        "--pick {}: opening '{}' ({})",
+                        super::policy().pick.unwrap_or_default(),
+                        crate::util::escape_terminal_text(chat_display_name),
+                        row_summary(&rows[index].0)
+                    );
+                    rows[index].0.clone()
+                } else {
+                    let candidates: Vec<String> = (1..=count)
+                        .filter_map(|n| same_name(n).map(|index| (n, index)))
+                        .map(|(n, index)| format!("  {n}) {}", row_summary(&rows[index].0)))
+                        .collect();
+                    return Err(coded(
+                        ErrorCode::ChatAmbiguous,
+                        format!(
+                            "chat name '{chat_display_name}' matches {count} chats in the list (top to bottom):\n{}\nre-run with --pick <N> to open one; openkakao-cli never guesses",
+                            candidates.join("\n")
+                        ),
+                    ));
+                }
             }
         };
-        trace(started, "unique chat-list row found");
+        trace(started, "chat-list row chosen");
 
         if super::policy().fallback_keys {
             // --fallback-keys: the pre-26.9 route, which can raise KakaoTalk,
@@ -3418,6 +3574,27 @@ end run
     /// makes every verification poll slower.
     const DELIVERY_TAIL_ROWS: usize = 12;
 
+    /// The human-presence boundary every AX write passes right before it
+    /// changes KakaoTalk. An allowlisted chat is already approved; any other
+    /// target needs macOS device-owner authentication, and a declined prompt
+    /// is `chat_not_allowed` (nothing was sent).
+    fn require_send_approval(chat_display_name: &str, action: &str) -> Result<()> {
+        if !super::needs_device_owner_auth(chat_display_name) {
+            return Ok(());
+        }
+        let target =
+            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+            "Approve one KakaoTalk {action} ‘{target}’, which is NOT in allowed_send_chats, after reviewing the terminal preview"
+        ))
+        .map_err(|error| {
+            coded(
+                ErrorCode::ChatNotAllowed,
+                format!("'{chat_display_name}' is not in allowed_send_chats and {error:#}"),
+            )
+        })
+    }
+
     struct ChatWindowElements {
         input_field: AXUIElement,
         message_table: AXUIElement,
@@ -3621,7 +3798,11 @@ end run
         })
     }
 
-    fn delivery_observations(table: &AXUIElement) -> Result<Vec<super::DeliveryObservation>> {
+    /// The newest message rows with their AX identity, for anchoring (spacer
+    /// rows and date separators are skipped, as for attachments).
+    fn delivery_observations(
+        table: &AXUIElement,
+    ) -> Result<Vec<(AXUIElement, super::DeliveryObservation)>> {
         let center = table_center_x(table);
         let mut seen = 0;
         let (rows, _) = tail_rows(table, |_| {
@@ -3630,12 +3811,42 @@ end run
         })?;
         Ok(rows
             .iter()
-            .filter_map(|row| message_from_row(row, center))
-            .map(|message| super::DeliveryObservation {
-                text: message.text,
-                outgoing: message.outgoing,
+            .filter_map(|row| {
+                let message = message_from_row(row, center)?;
+                let observation = super::DeliveryObservation {
+                    text: message.text,
+                    outgoing: message.outgoing,
+                };
+                Some((row.element.clone(), observation))
             })
             .collect())
+    }
+
+    /// [`super::is_verified_delivery`] anchored on the baseline's newest row.
+    /// The anchor must be the same AX element still showing the same content,
+    /// so a recycled row view can never move it.
+    fn text_delivery_verified(
+        baseline: &[(AXUIElement, super::DeliveryObservation)],
+        current: &[(AXUIElement, super::DeliveryObservation)],
+        message: &str,
+        composer_value: Option<&str>,
+    ) -> bool {
+        let start = super::appended_rows_start(baseline.last(), current, |left, right| {
+            left.1 == right.1
+                && unsafe { CFEqual(left.0.as_CFTypeRef(), right.0.as_CFTypeRef()) != 0 }
+        });
+        let observations = |rows: &[(AXUIElement, super::DeliveryObservation)]| -> Vec<_> {
+            rows.iter()
+                .map(|(_, observation)| observation.clone())
+                .collect()
+        };
+        super::is_verified_delivery(
+            &observations(baseline),
+            &observations(current),
+            start,
+            message,
+            composer_value,
+        )
     }
 
     /// The newest message-table rows (with their AX identity, for anchoring)
@@ -4349,11 +4560,7 @@ end run
             // Authentication may take a while and needs nothing from
             // KakaoTalk; give the user's app back first.
             focus.restore();
-            let authenticated_target =
-                crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-            openkakao_cli::human_auth::require_device_owner_auth(&format!(
-                "Approve one KakaoTalk {noun} to ‘{authenticated_target}’ after reviewing the terminal preview"
-            ))?;
+            require_send_approval(chat_display_name, &format!("{noun} to"))?;
             // Revalidate the exact recipient, the previewed name and the very
             // same one-file send button immediately before the commit.
             if find_chat_window(&app, chat_display_name)?.is_none() {
@@ -4635,11 +4842,7 @@ end run
         // composer, and pre-send bubble baseline are all known; authentication
         // happens immediately before the composer is changed.
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk message to ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "message to")?;
 
         let commit_note = match &send_button {
             Some(button) => {
@@ -4673,7 +4876,7 @@ end run
                             });
                         }
                     };
-                    if super::is_verified_delivery(
+                    if text_delivery_verified(
                         &baseline,
                         &current,
                         message,
@@ -5105,11 +5308,7 @@ end run
             return Ok(action);
         }
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk reply in ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "reply in")?;
         let baseline = delivery_observations(&elements.message_table)?;
         focus.watch();
         press_bubble_menu_item(&app, &bubble.text_area, "답장")?;
@@ -5140,7 +5339,7 @@ end run
         loop {
             let current = delivery_observations(&elements.message_table);
             if let Ok(current) = &current {
-                if super::is_verified_delivery(
+                if text_delivery_verified(
                     &baseline,
                     current,
                     message,
@@ -5189,11 +5388,7 @@ end run
             return Ok(action);
         }
         focus.watch();
-        let authenticated_target =
-            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
-        openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk message edit in ‘{authenticated_target}’ after reviewing the terminal preview"
-        ))?;
+        require_send_approval(chat_display_name, "message edit in")?;
         let rows = |bubbles: &[Bubble]| -> Vec<(String, bool, bool)> {
             bubbles
                 .iter()
@@ -5315,46 +5510,67 @@ end run
         let mut rows = Vec::new();
         table.find_all("AXRow", &mut rows);
 
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut static_texts = Vec::new();
-            row.find_all("AXStaticText", &mut static_texts);
-            // The first static text is the chat name (same convention as
-            // open_chat). Skip rows we can't name.
-            let Some(name) = static_texts.first().and_then(|t| t.value.clone()) else {
+        Ok(rows.into_iter().filter_map(chat_row).collect())
+    }
+
+    /// One chat-list row's name, unread badge, time and preview. Rows we
+    /// can't name are `None`.
+    fn chat_row(row: &AxNode) -> Option<ChatListRow> {
+        let mut static_texts = Vec::new();
+        row.find_all("AXStaticText", &mut static_texts);
+        // The first static text is the chat name (same convention as
+        // open_chat).
+        let name = static_texts.first().and_then(|t| t.value.clone())?;
+        // Among the remaining static texts, the unread badge is the one
+        // whose whole value parses as an integer (e.g. "5"); a
+        // non-numeric one (e.g. "어제", "오후 3:14") is the timestamp.
+        let mut unread = 0;
+        let mut timestamp = String::new();
+        for t in static_texts.iter().skip(1) {
+            let Some(v) = t.value.as_deref() else {
                 continue;
             };
-            // Among the remaining static texts, the unread badge is the one
-            // whose whole value parses as an integer (e.g. "5"); a
-            // non-numeric one (e.g. "어제", "오후 3:14") is the timestamp.
-            let mut unread = 0;
-            let mut timestamp = String::new();
-            for t in static_texts.iter().skip(1) {
-                let Some(v) = t.value.as_deref() else {
-                    continue;
-                };
-                if let Ok(n) = v.trim().parse::<i32>() {
-                    if unread == 0 {
-                        unread = n;
-                    }
-                } else if timestamp.is_empty() {
-                    timestamp = v.to_string();
+            if let Ok(n) = v.trim().parse::<i32>() {
+                if unread == 0 {
+                    unread = n;
                 }
+            } else if timestamp.is_empty() {
+                timestamp = v.to_string();
             }
-            // The last-message preview is the row's AXTextArea value.
-            let preview = row
-                .find_first("AXTextArea")
-                .and_then(|t| t.value.clone())
-                .unwrap_or_default();
-
-            out.push(ChatListRow {
-                name,
-                unread,
-                preview,
-                timestamp,
-            });
         }
-        Ok(out)
+        // The last-message preview is the row's AXTextArea value.
+        let preview = row
+            .find_first("AXTextArea")
+            .and_then(|t| t.value.clone())
+            .unwrap_or_default();
+        Some(ChatListRow {
+            name,
+            unread,
+            preview,
+            timestamp,
+        })
+    }
+
+    /// What tells same-name rows apart for a human: time, preview, pin.
+    fn row_summary(row: &AXUIElement) -> String {
+        let Ok(node) = snapshot(row) else {
+            return "(row could not be read)".to_string();
+        };
+        let pinned = node.any(&|n: &AxNode| {
+            n.role == "AXImage" && n.description.as_deref().is_some_and(|d| d.contains("pin"))
+        });
+        let facts = chat_row(&node).map_or_else(Vec::new, |row| {
+            let mut facts = vec![row.timestamp, crate::util::truncate(&row.preview, 40)];
+            if row.unread > 0 {
+                facts.push(format!("{} unread", row.unread));
+            }
+            facts
+        });
+        let mut parts: Vec<String> = facts.into_iter().filter(|f| !f.is_empty()).collect();
+        if pinned {
+            parts.push("📌 pinned".to_string());
+        }
+        crate::util::escape_terminal_text(&parts.join(" · "))
     }
 
     /// KakaoTalk's normal (layer-0) windows across all Spaces and how many are

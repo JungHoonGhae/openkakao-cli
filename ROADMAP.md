@@ -44,9 +44,9 @@ chats when the window is open.
 Agent-originated replies use a durable `SafeSendOutbox` instead of invoking AX
 directly. `propose` is local-only and idempotent when given a source-event key;
 `approve` is interactive-only and claims the immutable target/message before
-calling the AX adapter. The proposal code is followed by macOS device-owner
-authentication, and direct real `local-send` uses the same OS boundary;
-`local-send-photo` shares it.
+calling the AX adapter. An exact `allowed_send_chats` entry is the human's standing
+approval; any other target needs macOS device-owner authentication before
+the commit, for `safe-send approve` and direct `local-send*` alike.
 Successful verification becomes `sent`. Adapter errors, process interruption,
 or an indeterminate completion after Return may have been pressed become
 `uncertain` and are never retried automatically. A failure proven to happen
@@ -112,9 +112,10 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 - Verify that a context menu opened with `AXShowMenu` belongs to the target
   element (its menu-layer window should touch the element's frame); today a
   pre-existing menu is refused and a cursor over the menu aborts the press.
-- Anchor text-send verification on the baseline's newest row by identity, as
-  the attachment path does, so a repeated short message pushed out of the
-  12-row tail cannot read as `delivery_uncertain`.
+- Text-send and reply verification now anchor on the baseline's newest row
+  (same AX element, same content), as the attachment path does. Confirm on a
+  device that a repeated short message pushed out of the 12-row tail verifies
+  instead of reading as `delivery_uncertain`.
 - A closed 1:1 chat with no row in the chat list (friends tab, or
   `kakaotalk://friend?action=chat`) and mentions remain unimplemented.
 - A same-name file removed and recreated in ~/Downloads while KakaoTalk's picker

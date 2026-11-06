@@ -204,8 +204,10 @@ impl ErrorCode {
                  list repaints, and re-run."
             }
             Self::ChatAmbiguous => {
-                "Several chats show this exact name. Rename one in KakaoTalk or close the extra \
-                 chat windows; openkakao-cli never guesses."
+                "Several chats show this exact name. With --open-if-needed, the message numbers \
+                 the chat-list rows (time, preview, pin): re-run with --pick <N> to open that one. \
+                 Otherwise rename one in KakaoTalk or close the extra chat windows; openkakao-cli \
+                 never guesses."
             }
             Self::SendButtonMissing => {
                 "This KakaoTalk build exposes no 전송 button to Accessibility (verified on \
@@ -249,8 +251,10 @@ impl ErrorCode {
                  [safety] allow_ax_send = true in ~/.config/openkakao/config.toml."
             }
             Self::ChatNotAllowed => {
-                "Run `openkakao-cli init --allow-chat \"<exact chat name>\"`, or add the name to \
-                 [safety] allowed_send_chats in ~/.config/openkakao/config.toml."
+                "Nothing was sent: this chat is not in allowed_send_chats and macOS device-owner \
+                 authentication was not given. Approve the Touch ID/password prompt, or allowlist \
+                 the exact name to send without it: `openkakao-cli init --allow-chat \"<exact chat \
+                 name>\"` (or [safety] allowed_send_chats in ~/.config/openkakao/config.toml)."
             }
             Self::InvalidFile => {
                 "Pass an existing, non-empty regular file with a UTF-8 path. local-send-file takes \
@@ -299,15 +303,41 @@ pub fn error_code(error: &anyhow::Error) -> Option<ErrorCode> {
         .map(|coded| coded.code)
 }
 
-/// `{"error": {"code", "message", "fix"}}` for `--json` failures. Uncoded
-/// errors use `"unclassified"` and a `null` fix.
+/// Whether a failed command may have committed a send. Every code except
+/// `delivery_uncertain` is raised before the commit point; it is looked for
+/// anywhere in the chain so added context can never hide it.
+pub fn may_have_delivered(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<CodedError>()
+            .is_some_and(|coded| coded.code == ErrorCode::DeliveryUncertain)
+    })
+}
+
+/// `{"error": {"code", "message", "fix", "disposition"}}` for `--json`
+/// failures. Uncoded errors use `"unclassified"` and a `null` fix.
+/// `disposition` (the agent-desktop vocabulary) says whether a repeat could
+/// send twice: only `not_delivered` is `retry: "safe"`.
+// ponytail: uncoded errors are `unknown` even from read-only commands; pass the
+// command's write-ness in here if agents need `safe` for those.
 pub fn error_json(error: &anyhow::Error) -> serde_json::Value {
     let code = error_code(error);
+    let delivery = if may_have_delivered(error) {
+        "uncertain"
+    } else if code.is_some() {
+        "not_delivered"
+    } else {
+        "unknown"
+    };
     serde_json::json!({
         "error": {
             "code": code.map_or("unclassified", ErrorCode::as_str),
             "message": format!("{error:#}"),
             "fix": code.map(ErrorCode::fix),
+            "disposition": {
+                "delivery": delivery,
+                "retry": if delivery == "not_delivered" { "safe" } else { "unsafe" },
+            },
         }
     })
 }
@@ -346,6 +376,27 @@ mod coded_tests {
         let json = error_json(&anyhow::anyhow!("boom"));
         assert_eq!(json["error"]["code"], "unclassified");
         assert!(json["error"]["fix"].is_null());
+        assert_eq!(json["error"]["disposition"]["delivery"], "unknown");
+        assert_eq!(json["error"]["disposition"]["retry"], "unsafe");
+    }
+
+    #[test]
+    fn only_pre_commit_codes_are_safe_to_retry() {
+        let refused = error_json(&coded(ErrorCode::ChatWindowNotOpen, "no window"));
+        assert_eq!(refused["error"]["disposition"]["delivery"], "not_delivered");
+        assert_eq!(refused["error"]["disposition"]["retry"], "safe");
+
+        // An uncertain send stays unsafe even under an outer pre-commit code.
+        let wrapped = Err::<(), _>(coded(ErrorCode::DeliveryUncertain, "maybe sent"))
+            .context(CodedError {
+                code: ErrorCode::ActionUnverified,
+                message: "outer".into(),
+            })
+            .unwrap_err();
+        assert!(may_have_delivered(&wrapped));
+        let json = error_json(&wrapped);
+        assert_eq!(json["error"]["disposition"]["delivery"], "uncertain");
+        assert_eq!(json["error"]["disposition"]["retry"], "unsafe");
     }
 
     #[test]

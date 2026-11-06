@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **An allowlisted chat needs no per-send authentication.** An exact `[safety] allowed_send_chats` entry now counts as the human's standing approval, so `local-send*`, `local-reply`, `local-edit` and `safe-send approve` to it no longer ask for Touch ID or the login password (the approval code and interactive terminal of `safe-send approve` stay). A chat outside the allowlist is no longer refused outright. It is flagged `⚠ NOT in [safety] allowed_send_chats`, the macOS prompt names it as not allowlisted, and the send needs device-owner authentication right before the commit; a declined prompt fails with `chat_not_allowed` and sends nothing. Security trade-off: the allowlist is a file your account can write, so any local process can now send to the chats listed in it without a presence check.
+
+### Added
+- Global `--pick <N>` for chats that share an exact name. With `--open-if-needed`, `chat_ambiguous` now numbers the matching chat-list rows top to bottom with what tells them apart (time, preview, unread count, `📌 pinned`), and `--pick N` opens that row; the chosen row is always printed to stderr. Without `--pick`, duplicates still refuse.
+- `--json` failures carry `"disposition": {"delivery", "retry"}`, the vocabulary agent-desktop uses: `not_delivered`/`safe` for every coded error raised before the commit point, `uncertain`/`unsafe` for `delivery_uncertain` (found anywhere in the error chain), and `unknown`/`unsafe` for uncoded errors. Agents can decide whether a repeat could send twice without keeping a list of codes.
+
+### Fixed
+- `safe-send approve` reported an uncertain outcome as `unclassified`; it is now `delivery_uncertain`. A send that failed before the commit keeps the adapter's code and fix (for example `chat_window_not_open`) instead of a bare "not sent", and an adapter error coded as possibly delivered quarantines the intent as `uncertain` instead of reopening it.
+- Text-send and `local-reply` verification anchor on the baseline's newest row by AX identity and content, as attachment verification does, so a repeated short message whose older copy scrolls out of the 12-row tail is no longer reported as `delivery_uncertain`. Without the anchor the previous counting rule applies.
+
 ## [1.10.0] - 2026-11-06
 
 ### Added

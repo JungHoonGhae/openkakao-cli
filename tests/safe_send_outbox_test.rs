@@ -237,10 +237,15 @@ fn ambiguous_transport_failure_is_quarantined_and_never_auto_retried() {
         .unwrap();
     let mut transport = FailingTransport { attempts: 0 };
 
-    assert!(outbox
-        .approve_and_send(&proposed.intent_id, &proposed.approval_code, &mut transport,)
-        .is_err());
+    let error = outbox
+        .approve_and_send(&proposed.intent_id, &proposed.approval_code, &mut transport)
+        .unwrap_err();
     assert_eq!(transport.attempts, 1);
+    // Agents branch on the code: an uncertain approval must say so.
+    assert_eq!(
+        openkakao_cli::error::error_json(&error)["error"]["code"],
+        "delivery_uncertain"
+    );
     drop(outbox);
 
     let mut reopened = SafeSendOutbox::open_at(&path).unwrap();

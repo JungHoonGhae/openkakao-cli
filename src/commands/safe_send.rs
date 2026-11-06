@@ -23,7 +23,12 @@ pub struct ApproveOptions {
     pub json: bool,
 }
 
-struct AxSendTransport;
+/// Keeps the adapter's pre-commit error so `approve` can surface its stable
+/// `code` and `fix` instead of a bare "not sent".
+#[derive(Default)]
+struct AxSendTransport {
+    not_sent: Option<anyhow::Error>,
+}
 
 impl SendTransport for AxSendTransport {
     fn send(&mut self, chat_name: &str, message: &str) -> TransportOutcome {
@@ -32,9 +37,15 @@ impl SendTransport for AxSendTransport {
             Ok(crate::ax_send::AxDeliveryOutcome::Uncertain { reason }) => {
                 TransportOutcome::Uncertain { reason }
             }
-            Err(error) => TransportOutcome::NotSent {
-                reason: error.to_string(),
+            // An error coded as possibly committed must never reopen the proposal.
+            Err(error) if crate::error::may_have_delivered(&error) => TransportOutcome::Uncertain {
+                reason: format!("{error:#}"),
             },
+            Err(error) => {
+                let reason = error.to_string();
+                self.not_sent = Some(error);
+                TransportOutcome::NotSent { reason }
+            }
         }
     }
 }
@@ -52,16 +63,6 @@ fn require_approval_session(
     if !allow_ax_send {
         anyhow::bail!(
             "AX sending is disabled; set safety.allow_ax_send = true only after reviewing the safe-send proposal"
-        );
-    }
-    Ok(())
-}
-
-fn require_allowed_approval_chat(allowed_chats: &[String], chat_name: &str) -> Result<()> {
-    if !allowed_chats.iter().any(|allowed| allowed == chat_name) {
-        anyhow::bail!(
-            "chat {:?} is not in safety.allowed_send_chats; refusing approval",
-            chat_name
         );
     }
     Ok(())
@@ -137,12 +138,16 @@ pub fn cmd_approve(options: ApproveOptions) -> Result<()> {
 
     let mut outbox = SafeSendOutbox::open()?;
     let intent = outbox.get(&options.intent_id)?;
-    require_allowed_approval_chat(&options.allowed_chats, &intent.chat_name)?;
 
     validate_outbound_message(&intent.message)?;
     eprintln!("Safe-send approval review:");
     eprintln!("  intent:  {}", intent.intent_id);
     eprintln!("  target:  {}", escape_terminal_text(&intent.chat_name));
+    if !crate::ax_send::is_allowlisted(&options.allowed_chats, &intent.chat_name) {
+        eprintln!(
+            "  ⚠ NOT in [safety] allowed_send_chats: macOS device-owner authentication follows the code"
+        );
+    }
     eprintln!(
         "  message: {}",
         serde_json::to_string(&escape_terminal_text(&intent.message))?
@@ -155,11 +160,13 @@ pub fn cmd_approve(options: ApproveOptions) -> Result<()> {
     let mut approval_code = String::new();
     std::io::stdin().read_line(&mut approval_code)?;
 
-    let sent = outbox.approve_and_send(
-        &intent.intent_id,
-        approval_code.trim(),
-        &mut AxSendTransport,
-    )?;
+    let mut transport = AxSendTransport::default();
+    let sent = outbox
+        .approve_and_send(&intent.intent_id, approval_code.trim(), &mut transport)
+        .map_err(|error| match transport.not_sent.take() {
+            Some(cause) => cause.context(error.to_string()),
+            None => error,
+        })?;
     if options.json {
         output_json(&sent)?;
     } else {
@@ -211,15 +218,5 @@ mod tests {
         assert!(disabled.to_string().contains("AX sending is disabled"));
 
         require_approval_session(false, true, true).unwrap();
-    }
-
-    #[test]
-    fn approval_chat_allowlist_requires_an_exact_full_name() {
-        let allowed = vec!["허용된 방".to_string()];
-
-        require_allowed_approval_chat(&allowed, "허용된 방").unwrap();
-        assert!(require_allowed_approval_chat(&allowed, "허용된").is_err());
-        assert!(require_allowed_approval_chat(&allowed, "허용된 방과 다른 방").is_err());
-        assert!(require_allowed_approval_chat(&[], "허용된 방").is_err());
     }
 }

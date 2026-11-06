@@ -40,7 +40,7 @@ fn run(
             serde_json::to_string(&escape_terminal_text(&opts.text))?
         );
         if !opts.skip_confirm {
-            eprint!("Continue to macOS device-owner authentication?\n[y/N] ");
+            eprint!("Continue?\n[y/N] ");
             if !confirm()? {
                 println!("Cancelled.");
                 return Ok(());
