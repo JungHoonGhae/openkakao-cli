@@ -83,6 +83,12 @@ openkakao-cli ax-read "chat display name" -n 20
 # Read-only check of an open chat window (composer, 전송 button, file button)
 openkakao-cli doctor --chat "chat display name"
 
+# (experimental) Reply or edit in an open chat window without taking focus.
+# The target bubble must match its whole text exactly.
+openkakao-cli local-reply "chat display name" "reply text" --to-last --dry-run   # show the target only
+openkakao-cli local-reply "chat display name" "reply text" --match "whole original text" -y
+openkakao-cli local-edit "chat display name" --match "your whole original text" "fixed text" -y
+
 # 4. Detect incoming messages (AX) — polls the chat list and fires a hook/webhook
 #    when a chat's unread count rises (no server contact)
 openkakao-cli ax-watch --hook-cmd 'my-script.sh'
@@ -253,6 +259,7 @@ Read-only operations are always available:
 | `local-send-file ... --dry-run` | Preview an AX file send (path and size validated) | None |
 | `local-send-photo ... --dry-run` | Preview an AX photo send without executing | None |
 | `doctor --chat <chat_name>` | Inspect an open chat window (composer, `전송` and file buttons); presses nothing | None |
+| `local-reply/local-edit ... --dry-run` | (experimental) Find and show the bubble a reply/edit would target | None |
 | `safe-send propose/list` | Persist or inspect send proposals (never sends) | None |
 
 > [!NOTE]
@@ -274,6 +281,9 @@ With `--json`, failures print `{"error": {"code", "message", "fix"}}` on stdout.
 | `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
 | `send_button_missing` | This build exposes no `전송` button | `--fallback-keys` |
 | `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc**: KakaoTalk closes its windows on Esc |
+| `composer_busy` | The composer holds a draft or a pending reply/edit | Send, clear or cancel it (the X next to its banner) in KakaoTalk |
+| `message_not_found`, `message_ambiguous` | No bubble matched, or several share the exact text | Only the newest ~40 rows are searched; scroll the bubble into view, or use `--to-last` |
+| `action_unverified` | KakaoTalk did not show the expected reply/edit state, so nothing more was done | Check the chat window and close a leftover banner with its X (never Esc) |
 | `staging_conflict` | `~/Downloads` already has a different file with this name | Send it from the top level of Downloads, Desktop or Documents, or rename it |
 | `user_active` | You kept typing during a `--fallback-keys` raise | Retry when idle, or `--wait-idle 0` |
 | `delivery_uncertain` | The send may have happened but was not proven | Check KakaoTalk before retrying; never retry blindly |

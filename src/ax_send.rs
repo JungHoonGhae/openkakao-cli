@@ -566,6 +566,105 @@ pub(crate) fn kakaotalk_spaces_assignment() -> Option<bool> {
         .map(|spaces| kakaotalk_on_all_spaces(&spaces))
 }
 
+/// Which message bubble `local-reply` / `local-edit` act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BubbleTarget {
+    /// The newest text bubble.
+    Last,
+    /// The one text bubble whose whole text is exactly this.
+    Text(String),
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum BubblePick {
+    Found(usize),
+    NotFound,
+    Ambiguous(usize),
+}
+
+/// Pick the target among text bubbles `(text, outgoing)` in chronological
+/// order. `own_only` limits it to outgoing bubbles (only those can be
+/// edited). Exact whole-text matches only; two matches refuse.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_bubble(bubbles: &[(String, bool)], target: &BubbleTarget, own_only: bool) -> BubblePick {
+    let eligible = |index: &usize| !own_only || bubbles[*index].1;
+    let indices: Vec<usize> = (0..bubbles.len()).filter(eligible).collect();
+    match target {
+        BubbleTarget::Last => indices
+            .last()
+            .map_or(BubblePick::NotFound, |&index| BubblePick::Found(index)),
+        BubbleTarget::Text(text) => {
+            let matching: Vec<usize> = indices
+                .into_iter()
+                .filter(|&index| bubbles[index].0 == *text)
+                .collect();
+            match matching.as_slice() {
+                [index] => BubblePick::Found(*index),
+                [] => BubblePick::NotFound,
+                many => BubblePick::Ambiguous(many.len()),
+            }
+        }
+    }
+}
+
+/// What the composer is doing, from its `AXDescription` (KakaoTalk 26.9:
+/// `메시지 입력`, `답장 메시지 입력`, `수정 메시지 입력`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerMode {
+    Normal,
+    Reply,
+    Edit,
+    Unknown,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn composer_mode(description: Option<&str>) -> ComposerMode {
+    match description.map(str::trim) {
+        Some(description) if description.ends_with("답장 메시지 입력") => {
+            ComposerMode::Reply
+        }
+        Some(description) if description.ends_with("수정 메시지 입력") => ComposerMode::Edit,
+        Some("메시지 입력") => ComposerMode::Normal,
+        _ => ComposerMode::Unknown,
+    }
+}
+
+/// The banner KakaoTalk shows above the composer in reply (`나에게 답장`,
+/// `<이름>에게 답장`) or edit (`메시지 수정`) mode.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mode_banner(text: &str) -> ComposerMode {
+    let text = text.trim();
+    if text.ends_with("에게 답장") {
+        ComposerMode::Reply
+    } else if text == "메시지 수정" {
+        ComposerMode::Edit
+    } else {
+        ComposerMode::Unknown
+    }
+}
+
+/// An edit is proven when an outgoing bubble now reads `new` and is marked
+/// `수정됨`, and one fewer outgoing bubble reads `old` than before.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn edit_verified(
+    before: &[(String, bool, bool)],
+    after: &[(String, bool, bool)],
+    old: &str,
+    new: &str,
+) -> bool {
+    let outgoing_with = |rows: &[(String, bool, bool)], text: &str| {
+        rows.iter()
+            .filter(|(body, outgoing, _)| *outgoing && body == text)
+            .count()
+    };
+    let edited_now = after
+        .iter()
+        .any(|(body, outgoing, edited)| *outgoing && *edited && body == new);
+    edited_now && outgoing_with(after, old) + 1 == outgoing_with(before, old)
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AxCheckStatus {
@@ -691,6 +790,78 @@ mod policy_tests {
         assert!(!kakaotalk_on_all_spaces(&plist::Value::Dictionary(
             plist::Dictionary::new()
         )));
+    }
+
+    fn bubbles(list: &[(&str, bool)]) -> Vec<(String, bool)> {
+        list.iter()
+            .map(|(text, out)| (text.to_string(), *out))
+            .collect()
+    }
+
+    #[test]
+    fn bubble_targets_are_exact_and_refuse_ambiguity() {
+        let chat = bubbles(&[
+            ("hi", false),
+            ("같은 말", true),
+            ("ok", true),
+            ("같은 말", false),
+        ]);
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Last, false),
+            BubblePick::Found(3)
+        );
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Last, true),
+            BubblePick::Found(2)
+        );
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Text("ok".into()), true),
+            BubblePick::Found(2)
+        );
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Text("같은 말".into()), false),
+            BubblePick::Ambiguous(2)
+        );
+        // Only own bubbles can be edited: the incoming duplicate is ignored.
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Text("같은 말".into()), true),
+            BubblePick::Found(1)
+        );
+        assert_eq!(
+            pick_bubble(&chat, &BubbleTarget::Text("o".into()), false),
+            BubblePick::NotFound
+        );
+        assert_eq!(
+            pick_bubble(&[], &BubbleTarget::Last, false),
+            BubblePick::NotFound
+        );
+    }
+
+    #[test]
+    fn composer_modes_and_banners_follow_the_measured_labels() {
+        assert_eq!(composer_mode(Some("메시지 입력")), ComposerMode::Normal);
+        assert_eq!(composer_mode(Some("답장 메시지 입력")), ComposerMode::Reply);
+        assert_eq!(composer_mode(Some("수정 메시지 입력")), ComposerMode::Edit);
+        assert_eq!(composer_mode(None), ComposerMode::Unknown);
+        assert_eq!(composer_mode(Some("Message")), ComposerMode::Unknown);
+        assert_eq!(mode_banner("나에게 답장"), ComposerMode::Reply);
+        assert_eq!(mode_banner("Pearl 진주에게 답장"), ComposerMode::Reply);
+        assert_eq!(mode_banner("메시지 수정"), ComposerMode::Edit);
+        assert_eq!(mode_banner("오후 3:14"), ComposerMode::Unknown);
+    }
+
+    #[test]
+    fn an_edit_needs_the_new_text_marked_edited_and_the_old_text_gone() {
+        let row = |text: &str, outgoing: bool, edited: bool| (text.to_string(), outgoing, edited);
+        let before = vec![row("오타 있음", true, false), row("다른 말", false, false)];
+        let edited = vec![row("오타 고침", true, true), row("다른 말", false, false)];
+        assert!(edit_verified(&before, &edited, "오타 있음", "오타 고침"));
+        // Not marked 수정됨: a new message, not an edit.
+        let sent = vec![row("오타 있음", true, false), row("오타 고침", true, false)];
+        assert!(!edit_verified(&before, &sent, "오타 있음", "오타 고침"));
+        // The old bubble is still there.
+        let both = vec![row("오타 있음", true, false), row("오타 고침", true, true)];
+        assert!(!edit_verified(&before, &both, "오타 있음", "오타 고침"));
     }
 
     #[test]
@@ -4431,6 +4602,431 @@ end run
         })
     }
 
+    /// Rows searched (newest first) for a reply/edit target.
+    const BUBBLE_SEARCH_ROWS: usize = 40;
+    const MODE_WAIT: Duration = Duration::from_secs(2);
+
+    struct Bubble {
+        text: String,
+        outgoing: bool,
+        /// The row shows KakaoTalk's `수정됨` (edited) mark.
+        edited: bool,
+        text_area: AXUIElement,
+    }
+
+    /// The newest text bubbles of a chat, chronological.
+    fn text_bubbles(table: &AXUIElement) -> Result<Vec<Bubble>> {
+        let center = table_center_x(table);
+        let mut seen = 0;
+        let (rows, _) = tail_rows(table, |_| {
+            seen += 1;
+            seen >= BUBBLE_SEARCH_ROWS
+        })?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let text_area = row.find_first("AXTextArea")?;
+                let text = text_area.value.clone()?;
+                let outgoing = center
+                    .zip(text_area.center_x())
+                    .is_some_and(|(table_center, bubble_center)| bubble_center > table_center);
+                let mut labels = Vec::new();
+                row.find_all("AXStaticText", &mut labels);
+                let edited = labels
+                    .iter()
+                    .any(|label| label.value.as_deref().map(str::trim) == Some("수정됨"));
+                Some(Bubble {
+                    text,
+                    outgoing,
+                    edited,
+                    text_area: text_area.element.clone(),
+                })
+            })
+            .collect())
+    }
+
+    struct ComposerState {
+        composer: AXUIElement,
+        mode: super::ComposerMode,
+        banner: super::ComposerMode,
+        /// (button, title, enabled), outside the message table.
+        buttons: Vec<(AXUIElement, String, bool)>,
+    }
+
+    fn composer_state(window: &AXUIElement) -> Result<ComposerState> {
+        let snap = snapshot_shallow(window)?;
+        let composer = find_input_field(&snap)
+            .ok_or_else(|| anyhow!("the chat window has no readable composer"))?;
+        let mode = super::composer_mode(attr_as_string(&composer, "AXDescription").as_deref());
+        let mut labels = Vec::new();
+        snap.find_all("AXStaticText", &mut labels);
+        let banner = labels
+            .iter()
+            .filter_map(|label| label.value.as_deref())
+            .map(super::mode_banner)
+            .find(|mode| *mode != super::ComposerMode::Unknown)
+            .unwrap_or(super::ComposerMode::Unknown);
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        let buttons = buttons
+            .into_iter()
+            .filter_map(|button| {
+                let title = button.title.clone()?;
+                let enabled = attr_as_bool(&button.element, "AXEnabled") == Some(true);
+                Some((button.element.clone(), title, enabled))
+            })
+            .collect();
+        Ok(ComposerState {
+            composer,
+            mode,
+            banner,
+            buttons,
+        })
+    }
+
+    /// Wait until both the composer's description and the banner say `mode`.
+    fn wait_for_mode(window: &AXUIElement, mode: super::ComposerMode) -> Result<ComposerState> {
+        let deadline = Instant::now() + MODE_WAIT;
+        loop {
+            let state = composer_state(window)?;
+            if state.mode == mode && state.banner == mode {
+                return Ok(state);
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!(
+                        "KakaoTalk did not enter {mode:?} mode (composer: {:?}, banner: {:?}); nothing was inserted",
+                        state.mode, state.banner
+                    ),
+                ));
+            }
+            sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Best effort after a failure inside reply/edit mode: clear the composer
+    /// and report whether the mode's banner is still showing.
+    fn leave_mode_note(window: &AXUIElement) -> String {
+        let Ok(state) = composer_state(window) else {
+            return String::new();
+        };
+        let _ = state.composer.set_value(CFString::new("").as_CFType());
+        if state.banner == super::ComposerMode::Unknown {
+            String::new()
+        } else {
+            format!(
+                "; the {:?} banner is still showing, close it with its X in KakaoTalk (never Esc)",
+                state.banner
+            )
+        }
+    }
+
+    /// `AXShowMenu` on a bubble and `AXPress` its exact `item`; the menu is
+    /// cancelled whenever it is found and the item is not pressed, and a menu
+    /// left showing is cancelled again.
+    fn press_bubble_menu_item(app: &AXUIElement, bubble: &AXUIElement, item: &str) -> Result<()> {
+        let Some(menu) = show_context_menu(app, bubble)? else {
+            let stray = if menu_still_open(app) {
+                "; a KakaoTalk menu is showing but could not be read, click elsewhere to close it (never Esc)"
+            } else {
+                ""
+            };
+            return Err(coded(
+                ErrorCode::MenuNotFound,
+                format!(
+                    "the message's context menu did not appear to Accessibility in time{stray}"
+                ),
+            ));
+        };
+        let items = menu_items(&menu);
+        let found: Vec<_> = items
+            .iter()
+            .filter(|(_, title)| title.as_deref().map(str::trim) == Some(item))
+            .collect();
+        let [(entry, _)] = found.as_slice() else {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::MenuNotFound,
+                format!(
+                    "the message's context menu has no unique '{item}' item (items: {:?})",
+                    items
+                        .iter()
+                        .map(|(_, title)| title.clone())
+                        .collect::<Vec<_>>()
+                ),
+            ));
+        };
+        let pressed = entry
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not press '{item}': {error:?}"));
+        if menu_still_open(app) {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+        }
+        pressed
+    }
+
+    /// What a reply/edit acted on (or would act on, for `--dry-run`).
+    #[derive(Debug, Clone)]
+    pub struct BubbleAction {
+        pub target_text: String,
+        pub target_outgoing: bool,
+    }
+
+    /// Shared start of `local-reply`/`local-edit`: the exact open window, an
+    /// empty composer in its normal mode, and the one target bubble.
+    fn bubble_target(
+        chat_display_name: &str,
+        target: &super::BubbleTarget,
+        own_only: bool,
+    ) -> Result<(
+        AXUIElement,
+        i32,
+        FocusGuard,
+        AXUIElement,
+        ChatWindowElements,
+        Bubble,
+    )> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let mut focus = FocusGuard::new(pid);
+        open_chat(&app, chat_display_name, &mut focus)?;
+        focus.restore();
+        let (window, elements) = wait_for_chat_elements(&app, chat_display_name)?;
+        let state = composer_state(&window)?;
+        let empty = attr_as_string(&elements.input_field, "AXValue").as_deref() == Some("");
+        if state.mode != super::ComposerMode::Normal || !empty {
+            return Err(coded(
+                ErrorCode::ComposerBusy,
+                format!(
+                    "the '{chat_display_name}' composer is not empty in its normal mode (mode: {:?})",
+                    state.mode
+                ),
+            ));
+        }
+        let mut bubbles = text_bubbles(&elements.message_table)?;
+        let pairs: Vec<(String, bool)> = bubbles
+            .iter()
+            .map(|bubble| (bubble.text.clone(), bubble.outgoing))
+            .collect();
+        let index =
+            match super::pick_bubble(&pairs, target, own_only) {
+                super::BubblePick::Found(index) => index,
+                super::BubblePick::NotFound => return Err(coded(
+                    ErrorCode::MessageNotFound,
+                    format!(
+                        "no matching text bubble among the newest rows of '{chat_display_name}'"
+                    ),
+                )),
+                super::BubblePick::Ambiguous(count) => {
+                    return Err(coded(
+                        ErrorCode::MessageAmbiguous,
+                        format!("{count} bubbles in '{chat_display_name}' have exactly this text"),
+                    ))
+                }
+            };
+        let bubble = bubbles.swap_remove(index);
+        Ok((app, pid, focus, window, elements, bubble))
+    }
+
+    /// Reply to one bubble without raising KakaoTalk (verified on 26.9.0):
+    /// `AXShowMenu` on it, `AXPress` `답장`, require reply mode (composer
+    /// `답장 메시지 입력` and a `…에게 답장` banner) **before inserting any
+    /// text**, then the `AXSelectedText` + `전송` commit and the usual
+    /// exact-text verification. Experimental.
+    pub fn reply_via_ax(
+        chat_display_name: &str,
+        target: &super::BubbleTarget,
+        message: &str,
+        dry_run: bool,
+    ) -> Result<BubbleAction> {
+        let (app, _pid, mut focus, window, elements, bubble) =
+            bubble_target(chat_display_name, target, false)?;
+        let action = BubbleAction {
+            target_text: bubble.text.clone(),
+            target_outgoing: bubble.outgoing,
+        };
+        if dry_run {
+            return Ok(action);
+        }
+        let authenticated_target =
+            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+            "Approve one KakaoTalk reply in ‘{authenticated_target}’ after reviewing the terminal preview"
+        ))?;
+        let baseline = delivery_observations(&elements.message_table)?;
+        focus.watch();
+        press_bubble_menu_item(&app, &bubble.text_area, "답장")?;
+        let state = match wait_for_mode(&window, super::ComposerMode::Reply) {
+            Ok(state) => state,
+            Err(error) => return Err(error.context(leave_mode_note(&window))),
+        };
+        let send = state
+            .buttons
+            .iter()
+            .find(|(_, title, _)| title == SEND_BUTTON_TITLE)
+            .map(|(button, _, _)| button.clone());
+        let Some(send) = send else {
+            let note = leave_mode_note(&window);
+            return Err(coded(
+                ErrorCode::SendButtonMissing,
+                format!("reply mode shows no '{SEND_BUTTON_TITLE}' button{note}"),
+            ));
+        };
+        let commit =
+            commit_with_send_button(&app, chat_display_name, &state.composer, &send, message);
+        focus.restore();
+        let note = match commit {
+            Ok(note) => note,
+            Err(error) => return Err(error.context(leave_mode_note(&window))),
+        };
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let current = delivery_observations(&elements.message_table);
+            if let Ok(current) = &current {
+                if super::is_verified_delivery(
+                    &baseline,
+                    current,
+                    message,
+                    attr_as_string(&state.composer, "AXValue").as_deref(),
+                ) {
+                    return Ok(action);
+                }
+            }
+            if current.is_err() || Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::DeliveryUncertain,
+                    format!(
+                        "the reply may have been sent but no additional exact-text bubble appeared in '{chat_display_name}' within {}s{}",
+                        VERIFY_TIMEOUT.as_secs(),
+                        note.press_error
+                            .map(|error| format!("; 전송 press result: {error}"))
+                            .unwrap_or_default()
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    /// Edit one of your own bubbles without raising KakaoTalk (verified on
+    /// 26.9.0): `AXPress` its menu's `수정`, require edit mode (composer
+    /// `수정 메시지 입력` preloaded with the old text, a `메시지 수정` banner),
+    /// replace the text (clear `AXValue`, then insert with `AXSelectedText`;
+    /// selecting all via `AXSelectedTextRange` was measured to append), press
+    /// the `수정` button, and require the bubble to read the new text with a
+    /// `수정됨` mark while the old text is gone. Experimental.
+    pub fn edit_via_ax(
+        chat_display_name: &str,
+        old: &str,
+        new: &str,
+        dry_run: bool,
+    ) -> Result<BubbleAction> {
+        let target = super::BubbleTarget::Text(old.to_string());
+        let (app, _pid, mut focus, window, elements, bubble) =
+            bubble_target(chat_display_name, &target, true)?;
+        let action = BubbleAction {
+            target_text: bubble.text.clone(),
+            target_outgoing: bubble.outgoing,
+        };
+        if dry_run {
+            return Ok(action);
+        }
+        let authenticated_target =
+            crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
+        openkakao_cli::human_auth::require_device_owner_auth(&format!(
+            "Approve one KakaoTalk message edit in ‘{authenticated_target}’ after reviewing the terminal preview"
+        ))?;
+        let rows = |bubbles: &[Bubble]| -> Vec<(String, bool, bool)> {
+            bubbles
+                .iter()
+                .map(|bubble| (bubble.text.clone(), bubble.outgoing, bubble.edited))
+                .collect()
+        };
+        let before = rows(&text_bubbles(&elements.message_table)?);
+        focus.watch();
+        press_bubble_menu_item(&app, &bubble.text_area, "수정")?;
+        let prepared = (|| {
+            let state = wait_for_mode(&window, super::ComposerMode::Edit)?;
+            if !wait_for_composer_value(&state.composer, old) {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    "edit mode did not load exactly the original text; nothing was changed",
+                ));
+            }
+            let commit = state
+                .buttons
+                .iter()
+                .filter(|(_, title, _)| title == "수정")
+                .map(|(button, _, _)| button.clone())
+                .collect::<Vec<_>>();
+            let [commit] = commit.as_slice() else {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    "edit mode shows no unique '수정' button",
+                ));
+            };
+            state
+                .composer
+                .set_value(CFString::new("").as_CFType())
+                .map_err(|error| anyhow!("could not clear the edit composer: {error:?}"))?;
+            if !wait_for_composer_value(&state.composer, "") {
+                anyhow::bail!("the edit composer did not clear");
+            }
+            let selected_text: AXAttribute<CFType> =
+                AXAttribute::new(&CFString::new("AXSelectedText"));
+            state
+                .composer
+                .set_attribute(&selected_text, CFString::new(new).as_CFType())
+                .map_err(|error| anyhow!("could not insert the edited text: {error:?}"))?;
+            let deadline = Instant::now() + COMPOSER_VERIFY_TIMEOUT;
+            loop {
+                let ready = attr_as_string(&state.composer, "AXValue").as_deref() == Some(new)
+                    && attr_as_bool(commit, "AXEnabled") == Some(true);
+                if ready {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    anyhow::bail!("the edit composer did not read back exactly the new text");
+                }
+                sleep(COMPOSER_VERIFY_POLL_INTERVAL);
+            }
+            if !matches!(find_chat_window(&app, chat_display_name), Ok(Some(_))) {
+                anyhow::bail!("the exact target window changed before the edit commit");
+            }
+            Ok((state, commit.clone()))
+        })();
+        let (state, commit) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                focus.restore();
+                return Err(error.context(leave_mode_note(&window)));
+            }
+        };
+        let press_error = commit.perform_action(&CFString::new(kAXPressAction)).err();
+        focus.restore();
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let cleared = attr_as_string(&state.composer, "AXValue").as_deref() == Some("");
+            if let Ok(after) = text_bubbles(&elements.message_table) {
+                if cleared && super::edit_verified(&before, &rows(&after), old, new) {
+                    return Ok(action);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::DeliveryUncertain,
+                    format!(
+                        "the edit may have been applied but '{chat_display_name}' shows no 수정됨 bubble with the new text within {}s; check KakaoTalk; press result: {press_error:?}",
+                        VERIFY_TIMEOUT.as_secs()
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
     /// One chat-list row scraped from the main window, read-only (never opens
     /// the chat, so its unread state is untouched).
     #[derive(Debug, Clone)]
@@ -4900,8 +5496,9 @@ end run
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    assign_kakaotalk_to_all_spaces, diagnose, launch_kakaotalk_in_background, read_via_ax,
-    scrape_chat_list, send_attachment_via_ax, send_via_ax_classified, ChatListRow,
+    assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
+    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
+    BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -4935,6 +5532,36 @@ mod stub {
     ) -> Result<super::AttachmentReceipt> {
         Err(anyhow!(
             "local-send-file / local-send-photo (AX automation) are only supported on macOS"
+        ))
+    }
+
+    /// Mirrors `imp::BubbleAction`; never constructed off macOS.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone)]
+    pub struct BubbleAction {
+        pub target_text: String,
+        pub target_outgoing: bool,
+    }
+
+    pub fn reply_via_ax(
+        _chat_display_name: &str,
+        _target: &super::BubbleTarget,
+        _message: &str,
+        _dry_run: bool,
+    ) -> Result<BubbleAction> {
+        Err(anyhow!(
+            "local-reply (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn edit_via_ax(
+        _chat_display_name: &str,
+        _old: &str,
+        _new: &str,
+        _dry_run: bool,
+    ) -> Result<BubbleAction> {
+        Err(anyhow!(
+            "local-edit (AX automation) is only supported on macOS"
         ))
     }
 
@@ -4981,8 +5608,9 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    assign_kakaotalk_to_all_spaces, diagnose, launch_kakaotalk_in_background, read_via_ax,
-    scrape_chat_list, send_attachment_via_ax, send_via_ax_classified, ChatListRow,
+    assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
+    read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax, send_via_ax_classified,
+    BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must

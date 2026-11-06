@@ -6,6 +6,7 @@ pub mod chats;
 pub mod doctor;
 pub mod download;
 pub mod init;
+pub mod local_actions;
 pub mod local_send;
 pub mod local_send_file;
 pub mod local_send_photo;

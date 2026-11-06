@@ -83,6 +83,11 @@ openkakao-cli ax-read "채팅방 표시 이름" -n 20
 # 열린 채팅 창을 읽기 전용으로 점검 (입력창·전송 버튼·파일 버튼)
 openkakao-cli doctor --chat "채팅방 표시 이름"
 
+# (실험) 열린 채팅 창에서 답장·수정(포커스 유지). 대상 말풍선은 전체 텍스트가 정확히 같아야 함
+openkakao-cli local-reply "채팅방 표시 이름" "답장 내용" --to-last --dry-run      # 대상 말풍선만 확인
+openkakao-cli local-reply "채팅방 표시 이름" "답장 내용" --match "원문 전체" -y
+openkakao-cli local-edit "채팅방 표시 이름" --match "보낸 원문 전체" "고친 내용" -y
+
 # 4. 수신 감지 (AX) — 채팅 목록을 폴링해 안읽음이 늘면 hook/webhook 발화 (서버 접촉 없음)
 openkakao-cli ax-watch --hook-cmd 'my-script.sh'
 
@@ -251,6 +256,7 @@ openkakao-cli safe-send cancel <intent_id>
 | `local-send-file ... --dry-run` | AX 파일 전송 미리보기 (경로·크기 검증) | 없음 |
 | `local-send-photo ... --dry-run` | AX 사진 전송 미리보기 | 없음 |
 | `doctor --chat <chat_name>` | 열린 채팅 창 점검 (입력창·`전송` 버튼·파일 버튼), 아무것도 누르지 않음 | 없음 |
+| `local-reply/local-edit ... --dry-run` | (실험) 답장·수정할 말풍선만 찾아 보여 줌 | 없음 |
 | `safe-send propose/list` | 영속 전송 제안 생성·조회 (실제 전송 없음) | 없음 |
 
 > [!NOTE]
@@ -272,6 +278,9 @@ openkakao-cli safe-send cancel <intent_id>
 | `chat_not_found`, `chat_list_filtered` | 채팅 목록에 로드되지 않았거나 검색어로 걸러짐 | 검색창을 비우고 목록을 스크롤하거나 탭을 바꿔 다시 그리게 합니다. 목록은 메인 창이 다시 그려지기 전까지 예전 상태일 수 있습니다 |
 | `send_button_missing` | 이 빌드가 `전송` 버튼을 AX에 노출하지 않음 | `--fallback-keys` |
 | `menu_not_found` | 컨텍스트 메뉴를 AX에서 찾지 못함(다른 동작은 하지 않음) | 다시 시도하거나 채팅 창을 직접 엽니다. 메뉴가 떠 있으면 다른 곳을 클릭해 닫습니다. **Esc는 누르지 마세요**(카카오톡이 창을 닫습니다) |
+| `composer_busy` | 입력창에 초안이 있거나 답장·수정 중 | 카카오톡에서 보내거나 지우거나 배너의 X로 취소 |
+| `message_not_found`, `message_ambiguous` | 대상 말풍선을 못 찾았거나 같은 텍스트가 둘 이상 | 최근 약 40행만 찾습니다. 화면에 보이게 스크롤하거나 `--to-last` |
+| `action_unverified` | 답장·수정 상태가 확인되지 않아 더 진행하지 않음 | 채팅 창을 확인하고 남은 배너를 X로 닫습니다(Esc 금지) |
 | `staging_conflict` | `~/Downloads`에 같은 이름의 다른 파일이 있음 | 파일을 다운로드·바탕화면·문서 최상위로 옮겨 보내거나 이름을 바꿉니다 |
 | `user_active` | `--fallback-keys` 경로에서 계속 입력 중이었음 | 잠시 손을 뗀 뒤 다시 시도하거나 `--wait-idle 0` |
 | `delivery_uncertain` | 전송했을 수도 있지만 확인하지 못함 | 카카오톡에서 직접 확인합니다. 그냥 재시도하지 마세요 |

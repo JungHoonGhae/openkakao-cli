@@ -107,7 +107,7 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
   chat window. Lookups take the message table before any insertion, but
   `ax-read` on a window with a pending `@` draft could pick the wrong table.
 
-## Message actions on an open chat window (designed, not implemented)
+## Message actions on an open chat window (reply/edit experimental, delete designed)
 
 The measured building blocks: each bubble row is `AXRow > AXCell (AXShowMenu) >
 [AXStaticText time, AXImage, AXTextArea text (AXShowMenu)]`. `AXShowMenu` on
@@ -124,23 +124,35 @@ deletion window) are pressed with `AXPress`, and `AXCancel` closes the menu (its
 layer-101 window disappears). After every menu operation no menu-layer window
 may remain; `doctor` warns when one is open.
 
-Planned commands, all experimental and verified on the memo chat first, with
-the exact allowlist, `--dry-run` printing the targeted bubble, refusal when
-the text matches more than one bubble, and verification by re-reading rows:
+Shipped as experimental (verified end to end on the memo chat, user's app
+frontmost throughout), with the exact allowlist, `--dry-run` showing the
+targeted bubble, whole-text matching that refuses duplicates, and verification
+by re-reading rows:
 
-- `local-reply <chat> --to-last|--match "<text>" "<message>"`: press 답장, then
-  **verify the reply context before inserting any text**. A reply banner
-  quoting the original must appear outside the message table; otherwise cancel
-  and refuse. A measured run where the menu step silently failed sent a plain
-  message instead. Then use the `AXSelectedText` + `전송` path.
-- `local-edit <chat> --match "<old>" "<new>"`: press 수정, require the composer
-  to load exactly `<old>`, replace it via `AXSelectedTextRange` [0, len] +
-  `AXSelectedText`, commit, and verify the bubble now reads `<new>`. The commit
-  control in edit mode is not measured yet.
+- `local-reply <chat> <message> --to-last|--match "<text>"`: press 답장, then
+  **confirm reply mode before inserting any text**. The composer description
+  must read `답장 메시지 입력` and a `…에게 답장` banner must appear outside
+  the message table. A run where the menu step silently failed once sent a
+  plain message instead. Then the `AXSelectedText` + `전송` commit follows,
+  verified by an additional exact-text outgoing bubble. The quote itself is
+  not exposed in the AX row.
+- `local-edit <chat> --match "<old>" "<new>"`: press 수정, then require the
+  composer `수정 메시지 입력` preloaded with exactly `<old>` and a `메시지 수정`
+  banner. Clear `AXValue` and insert with `AXSelectedText`: setting
+  `AXSelectedTextRange` to the full range did not select all and appended
+  instead. Press the `수정` button, and require a `수정됨` bubble reading
+  `<new>` while one fewer reads `<old>`.
+- Leaving a reply/edit mode after a pre-commit failure is not measured: the
+  composer is cleared and a remaining banner is reported (`action_unverified`).
+  Finding the banner's close control would allow a clean `--abort`.
+
+Still designed only:
+
 - `local-delete <chat> --match "<text>" [--for-everyone]`: press the matching
   삭제 item, confirm only a dialog whose buttons are recognized, and verify the
   bubble is gone or marked deleted. This is irreversible, so own outgoing
-  bubbles only and device-owner authentication first.
+  bubbles only and device-owner authentication first. The confirmation dialog
+  is not measured yet.
 - Mentions cannot be completed focus-free. After `@Pe` is inserted, the
   suggestion `AXTable` lists candidates (`Pearl 진주`, `Pearl_진주`). But
   `AXSelected`, `AXPress` or `AXConfirm` on the row, cell or table, or typing

@@ -112,6 +112,10 @@ pub enum ErrorCode {
     SendButtonMissing,
     MenuNotFound,
     StagingConflict,
+    ComposerBusy,
+    MessageNotFound,
+    MessageAmbiguous,
+    ActionUnverified,
     UserActive,
     AxSendDisabled,
     ChatNotAllowed,
@@ -137,6 +141,10 @@ impl ErrorCode {
             Self::SendButtonMissing => "send_button_missing",
             Self::MenuNotFound => "menu_not_found",
             Self::StagingConflict => "staging_conflict",
+            Self::ComposerBusy => "composer_busy",
+            Self::MessageNotFound => "message_not_found",
+            Self::MessageAmbiguous => "message_ambiguous",
+            Self::ActionUnverified => "action_unverified",
             Self::UserActive => "user_active",
             Self::AxSendDisabled => "ax_send_disabled",
             Self::ChatNotAllowed => "chat_not_allowed",
@@ -212,6 +220,23 @@ impl ErrorCode {
                 "A different file with this name is already in ~/Downloads. Move or copy your file \
                  to the top level of ~/Downloads, ~/Desktop or ~/Documents and send it from there, \
                  or rename it."
+            }
+            Self::ComposerBusy => {
+                "That chat window's composer holds a draft or a pending reply/edit. Send, clear or \
+                 cancel it in KakaoTalk (the X next to its banner), then retry."
+            }
+            Self::MessageNotFound => {
+                "Only the newest ~40 rows are searched, and --match must equal the bubble's whole \
+                 text (edits: your own bubbles only). Scroll the chat so the bubble is visible, or \
+                 use --to-last."
+            }
+            Self::MessageAmbiguous => {
+                "Several bubbles have exactly this text, so openkakao-cli refuses to guess. Use \
+                 --to-last or act on it in KakaoTalk."
+            }
+            Self::ActionUnverified => {
+                "KakaoTalk did not show the expected reply/edit state, so nothing more was sent. \
+                 Check the chat window and close a leftover reply/edit banner with its X (never Esc)."
             }
             Self::UserActive => {
                 "You were using the keyboard or mouse, so KakaoTalk was not raised. Retry when idle, \

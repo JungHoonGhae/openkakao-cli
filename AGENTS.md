@@ -85,6 +85,12 @@ foreground app:
 - Opening a closed chat (`--open-if-needed`): `AXShowMenu` on the chat-list row
   and `AXPress` `채팅방 열기`. A hidden main window is shown with `AXPress` on
   the menu bar's `창 > 채팅`.
+- Reply/edit (experimental `local-reply`, `local-edit`): `AXShowMenu` on the
+  bubble's `AXTextArea`. The menu is found in KakaoTalk's menu-layer window
+  (CoreGraphics layer ≥ 100, matched by pid, then hit-tested). Press `답장` or
+  `수정`, and confirm the mode by the composer description (`답장/수정 메시지
+  입력`) and its banner before inserting text. Mentions cannot be completed by
+  AX and stay manual.
 
 `--fallback-keys` keeps the older raise + Return / ⌘V / double-click routes.
 Those wait until the user has been idle for `--wait-idle` seconds and restore
@@ -181,6 +187,7 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `main_window_minimized`, `kakaotalk_not_on_all_spaces`, `chat_list_unavailable`,
 `chat_window_not_open`, `chat_not_found`, `chat_list_filtered`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
+`composer_busy`, `message_not_found`, `message_ambiguous`, `action_unverified`,
 `user_active`, `ax_send_disabled`, `chat_not_allowed`, `invalid_file`,
 `attachment_unverified`, `delivery_uncertain`. Never retry a
 `delivery_uncertain` send automatically.

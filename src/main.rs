@@ -582,6 +582,56 @@ enum Commands {
         #[arg(long, help = "Preview the action without executing")]
         dry_run: bool,
     },
+    /// Reply to one message in an open chat window, focus-free (experimental)
+    #[command(
+        long_about = "Reply to one message bubble in an open chat window via AX, without raising \
+                      KakaoTalk (experimental; verified on KakaoTalk 26.9.0). The target is the newest \
+                      text bubble (--to-last) or the one bubble whose whole text equals --match \
+                      (two matches refuse). Reply mode must be confirmed (composer and banner) before \
+                      any text is inserted. --dry-run reads the chat and shows the target only. Same \
+                      allow_ax_send, exact allowlist and device-owner authentication as local-send."
+    )]
+    LocalReply {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// Reply text
+        message: String,
+        /// Reply to the newest text bubble
+        #[arg(
+            long,
+            conflicts_with = "match_text",
+            required_unless_present = "match_text"
+        )]
+        to_last: bool,
+        /// Reply to the one bubble whose whole text is exactly this
+        #[arg(long = "match", value_name = "TEXT")]
+        match_text: Option<String>,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show the targeted bubble without acting")]
+        dry_run: bool,
+    },
+    /// Edit one of your own messages in an open chat window, focus-free (experimental)
+    #[command(
+        long_about = "Edit one of your own message bubbles via AX, without raising KakaoTalk \
+                      (experimental; verified on KakaoTalk 26.9.0). --match must equal the bubble's \
+                      whole text (two matches refuse). Edit mode must load exactly that text before it \
+                      is replaced, and success requires the bubble to show the new text with KakaoTalk's \
+                      수정됨 mark. The new text is used as given (no prefix). --dry-run shows the target only."
+    )]
+    LocalEdit {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// The bubble's current whole text
+        #[arg(long = "match", value_name = "OLD_TEXT")]
+        old: String,
+        /// The new text
+        new: String,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show the targeted bubble without acting")]
+        dry_run: bool,
+    },
     /// Send one photo via AX automation through the official KakaoTalk app
     LocalSendPhoto {
         chat_name: String,
@@ -793,6 +843,8 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalSchema
             | Commands::LocalSend { .. }
             | Commands::LocalSendFile { .. }
+            | Commands::LocalReply { .. }
+            | Commands::LocalEdit { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxRead { .. }
@@ -1501,6 +1553,53 @@ fn run(cli: Cli) -> Result<()> {
                     json,
                 },
             )?
+        }
+        Commands::LocalReply {
+            chat_name,
+            message,
+            to_last,
+            match_text,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            let target = match match_text {
+                Some(text) if !to_last => ax_send::BubbleTarget::Text(text),
+                _ => ax_send::BubbleTarget::Last,
+            };
+            commands::local_actions::cmd_local_reply(
+                commands::local_actions::BubbleActionOptions {
+                    chat_name,
+                    target,
+                    text: format_outgoing_message(&message, no_prefix),
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
+        }
+        Commands::LocalEdit {
+            chat_name,
+            old,
+            new,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            commands::local_actions::cmd_local_edit(commands::local_actions::BubbleActionOptions {
+                chat_name,
+                target: ax_send::BubbleTarget::Text(old),
+                text: new,
+                skip_confirm: yes,
+                dry_run,
+                json,
+            })?
         }
         Commands::LocalSendPhoto {
             chat_name,
@@ -2719,6 +2818,62 @@ mod tests {
                 assert!(!dry_run);
             }
             other => panic!("expected local-send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_reply_and_edit_commands_parse() {
+        let cli = Cli::try_parse_from([
+            "openkakao-cli",
+            "local-reply",
+            "나와의 채팅",
+            "답장",
+            "--match",
+            "원문",
+            "--dry-run",
+        ])
+        .expect("local-reply --match should parse");
+        match cli.command {
+            Commands::LocalReply {
+                to_last,
+                match_text,
+                dry_run,
+                ..
+            } => {
+                assert!(!to_last);
+                assert_eq!(match_text.as_deref(), Some("원문"));
+                assert!(dry_run);
+            }
+            other => panic!("expected local-reply, got {other:?}"),
+        }
+        // One of --to-last / --match is required, and they conflict.
+        assert!(Cli::try_parse_from(["openkakao-cli", "local-reply", "c", "m"]).is_err());
+        assert!(Cli::try_parse_from([
+            "openkakao-cli",
+            "local-reply",
+            "c",
+            "m",
+            "--to-last",
+            "--match",
+            "x"
+        ])
+        .is_err());
+        let cli = Cli::try_parse_from([
+            "openkakao-cli",
+            "local-edit",
+            "c",
+            "--match",
+            "old",
+            "new",
+            "-y",
+        ])
+        .expect("local-edit should parse");
+        match cli.command {
+            Commands::LocalEdit { old, new, yes, .. } => {
+                assert_eq!((old.as_str(), new.as_str()), ("old", "new"));
+                assert!(yes);
+            }
+            other => panic!("expected local-edit, got {other:?}"),
         }
     }
 
