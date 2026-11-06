@@ -108,7 +108,7 @@ export default function Page() {
             Turn KakaoTalk into a <span className="font-medium text-brand">local workflow surface</span>.
           </p>
           <p className="mt-3 max-w-3xl text-base leading-7 text-fd-muted-foreground md:text-lg">
-            No login, 0.4 s per verified send, none of the known account-sanction triggers: it drives the official app you are already signed in to.
+            No login, 0.4 s per verified send, just the official app you are already signed in to.
           </p>
         </div>
 

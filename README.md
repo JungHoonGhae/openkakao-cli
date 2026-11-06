@@ -23,7 +23,7 @@
 **한국어** | [English](README.en.md)
 
 > [!TIP]
-> **로그인 없이, 0.4초 만에, 계정 제재의 알려진 원인 없이.** `local-send`/`ax-read`는 이미 로그인된 **공식 카카오톡 앱**을 macOS Accessibility API로 직접 조작합니다. 서버 로그인, LOCO 프로토콜 통신, DB 복호화를 하지 않으므로 제재 사례가 보고된 경로(미등록 기기 로그인, 비공식 클라이언트 통신)를 아예 거치지 않습니다. 아래 [Quick Start](#quick-start) 참고.
+> **로그인 없이, 0.4초 만에, 공식 앱 그대로.** `local-send`/`ax-read`는 이미 로그인된 **공식 카카오톡 앱**을 macOS Accessibility API로 직접 조작합니다. 서버 로그인도, LOCO 프로토콜 통신도, DB 복호화도 하지 않으니 계정 정지 사례가 나온 방식(미등록 기기 로그인, 비공식 클라이언트 통신)은 하나도 쓰지 않습니다. 아래 [Quick Start](#quick-start) 참고.
 
 ### ⚡ 압도적으로 빠릅니다
 
@@ -197,7 +197,7 @@ openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/skills@op
 ## 핵심
 
 - **빠름**: 전송 0.4초(말풍선 확인 포함), 읽기 0.2초. v1.9 대비 약 100배 이상
-- **계정 제재의 알려진 원인을 쓰지 않음**: 서버 로그인·LOCO 통신 없이 공식 앱만 조작
+- **정지 사례가 나온 방식은 쓰지 않음**: 서버 로그인도 LOCO 통신도 없이 공식 앱만 조작
 - **사람 승인 모델**: 화이트리스트 방은 바로 전송, 그 밖의 방은 ⚠ 표시와 Touch ID. 이름이 같은 방은 추측하지 않고 `--pick`
 - **원격 복구**: `ax-login`(키체인), 에이전트용 `--json` 에러의 `disposition`(재시도해도 중복 전송이 없는지)
 - `local-send`/`ax-read`로 **로그인 없이** 실제 메시지 전송·읽기 (macOS Accessibility API로 카톡 UI를 직접 조작, 서버 통신 없음)
