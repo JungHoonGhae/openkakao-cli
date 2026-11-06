@@ -50,3 +50,16 @@
 
 # Allow http:// webhook URLs to non-loopback hosts (default: false)
 # allow_insecure_webhooks = false
+
+[ax]
+# Login-free AX automation (local-send*, ax-read, safe-send approve).
+# Seconds of keyboard/mouse idle time required before KakaoTalk may be raised
+# by a --fallback-keys route (default 2, 0 disables). --wait-idle overrides it.
+# wait_idle_secs = 2
+
+# Open a chat that has no open window from the chat list (context menu,
+# focus-free; marks the chat as read). --open-if-needed enables it per run.
+# open_if_needed = false
+
+# Largest file local-send-file accepts, in MiB (default 300).
+# max_file_mb = 300

@@ -71,6 +71,25 @@ struct Cli {
         help = "Print [DONE] to stdout after command completes successfully"
     )]
     completion_promise: bool,
+    #[arg(
+        long,
+        global = true,
+        value_name = "SECS",
+        help = "AX: keyboard/mouse idle seconds required before KakaoTalk may be raised (default 2, 0 disables)"
+    )]
+    wait_idle: Option<u64>,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: open a chat with no open window from the chat list (raises KakaoTalk briefly)"
+    )]
+    open_if_needed: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: send text by raising KakaoTalk and pressing Return instead of its 전송 button"
+    )]
+    fallback_keys: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -537,6 +556,27 @@ enum Commands {
         #[arg(long, help = "Preview the action without executing")]
         dry_run: bool,
     },
+    /// Send one file (any type, e.g. .docx/.pdf/.zip) via AX automation
+    /// through the official KakaoTalk app
+    #[command(
+        long_about = "Send one file via AX automation through the official KakaoTalk app, with no \
+                      server login.\n\nThe file must exist, be a non-empty regular file (symlinks \
+                      are resolved) and fit [ax] max_file_mb (default 300 MiB). It is staged as one \
+                      file URL on the clipboard, pasted into the exact chat window, and sent from \
+                      KakaoTalk's single-file preview after macOS device-owner authentication. \
+                      Delivery is verified by a new outgoing [파일]/[사진] bubble or the file name. \
+                      Requires allow_ax_send and an exact allowed_send_chats entry (not for --dry-run). \
+                      The clipboard is overwritten and KakaoTalk is raised briefly (after --wait-idle)."
+    )]
+    LocalSendFile {
+        chat_name: String,
+        /// Path to the file to send
+        file: String,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Preview the action without executing")]
+        dry_run: bool,
+    },
     /// Send one photo via AX automation through the official KakaoTalk app
     LocalSendPhoto {
         chat_name: String,
@@ -613,11 +653,39 @@ enum Commands {
         #[arg(long)]
         hook_fail_fast: bool,
     },
+    /// First-run setup: AX readiness checks, send allowlist, agent skill
+    #[command(
+        long_about = "First-run setup for the login-free AX path. Shows read-only readiness checks \
+                      (Accessibility, sign-in, main window on this Space, chat-list search), writes \
+                      ~/.config/openkakao/config.toml (chats are only allowlisted from names you type \
+                      or pass with --allow-chat; allowlisting one also sets allow_ax_send = true), and \
+                      installs the openkakao-cli agent skill (npx skills add, or a direct SKILL.md \
+                      download when npx is missing). It offers to launch KakaoTalk in the background \
+                      and to assign it to All Desktops (the Dock restarts once; non-interactive runs \
+                      do this only with --all-spaces). Safe to re-run."
+    )]
+    Init {
+        /// Non-interactive: accept defaults (skill target = detected agents)
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Where to install the agent skill
+        #[arg(long, value_enum)]
+        skill: Option<commands::init::SkillTarget>,
+        /// Exact chat display name local-send may send to (repeatable)
+        #[arg(long = "allow-chat", value_name = "CHAT_NAME")]
+        allow_chat: Vec<String>,
+        /// Assign KakaoTalk to All Desktops without asking (restarts the Dock once)
+        #[arg(long)]
+        all_spaces: bool,
+    },
     /// Run diagnostic checks on KakaoTalk installation and connectivity
     Doctor {
         /// Also test LOCO booking connectivity (makes network request)
         #[arg(long)]
         loco: bool,
+        /// Also inspect this open chat window (read-only): composer, 전송 button, file button
+        #[arg(long, value_name = "CHAT_NAME")]
+        chat: Option<String>,
     },
 }
 
@@ -663,16 +731,17 @@ fn require_loco_write(config: &config::OpenKakaoConfig) -> Result<()> {
 
 fn require_ax_send(config: &config::OpenKakaoConfig) -> Result<()> {
     if !config.safety.allow_ax_send {
-        anyhow::bail!(
+        return Err(error::coded(
+            error::ErrorCode::AxSendDisabled,
             "AX-automation send is disabled by default.\n\
-             local-send / local-send-photo drive the real KakaoTalk window (types\n\
-             your message or picks your file, then hits Enter on your behalf) —\n\
+             local-send / local-send-file / local-send-photo drive the real KakaoTalk\n\
+             window (insert your message or file, then send it on your behalf) —\n\
              treat them with the same care as `send`.\n\n\
              To enable, add to ~/.config/openkakao/config.toml:\n\n\
              [safety]\n\
              allow_ax_send = true\n\n\
-             KakaoTalk must be running and already logged in; no server/LOCO contact is made."
-        );
+             KakaoTalk must be running and already logged in; no server/LOCO contact is made.",
+        ));
     }
     Ok(())
 }
@@ -688,14 +757,17 @@ fn require_allowed_send_chat(config: &config::OpenKakaoConfig, chat_name: &str) 
         .iter()
         .any(|c| c == chat_name)
     {
-        anyhow::bail!(
-            "chat \"{chat_name}\" is not in the local-send allowlist.\n\n\
-             local-send / local-send-photo match chats by display-name text scraped from\n\
-             the KakaoTalk UI, not a chat-id, so an explicit allowlist is required to\n\
-             avoid sending to the wrong chat. Add to ~/.config/openkakao/config.toml:\n\n\
-             [safety]\n\
-             allowed_send_chats = [\"{chat_name}\"]"
-        );
+        return Err(error::coded(
+            error::ErrorCode::ChatNotAllowed,
+            format!(
+                "chat \"{chat_name}\" is not in the local-send allowlist.\n\n\
+                 local-send / local-send-file / local-send-photo match chats by display-name\n\
+                 text scraped from the KakaoTalk UI, not a chat-id, so an explicit allowlist is\n\
+                 required to avoid sending to the wrong chat. Add to ~/.config/openkakao/config.toml:\n\n\
+                 [safety]\n\
+                 allowed_send_chats = [\"{chat_name}\"]"
+            ),
+        ));
     }
     Ok(())
 }
@@ -715,18 +787,49 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalSearch { .. }
             | Commands::LocalSchema
             | Commands::LocalSend { .. }
+            | Commands::LocalSendFile { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxRead { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
+            | Commands::Init { .. }
             | Commands::Doctor { .. }
     )
 }
 
-fn main() -> Result<()> {
+fn main() {
     let cli = Cli::parse();
+    let json = cli.json;
+    if let Err(error) = run(cli) {
+        // Agents read stdout: with --json, failures are a JSON object there
+        // too, with a stable `code` and a `fix` hint. Humans get stderr.
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&error::error_json(&error))
+                    .unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+        eprintln!("Error: {error:?}");
+        if let Some(code) = error::error_code(&error) {
+            eprintln!("Fix ({}): {}", code.as_str(), code.fix());
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     let config = load_config()?;
+    ax_send::set_policy(ax_send::AxPolicy {
+        wait_idle: std::time::Duration::from_secs(
+            cli.wait_idle
+                .or(config.ax.wait_idle_secs)
+                .unwrap_or(ax_send::DEFAULT_WAIT_IDLE.as_secs()),
+        ),
+        open_if_needed: cli.open_if_needed || config.ax.open_if_needed,
+        fallback_keys: cli.fallback_keys,
+    });
     set_auth_policy(AuthPolicy::from_config(&config.auth));
     let json = cli.json;
     let unattended = cli.unattended || config.mode.unattended;
@@ -1373,6 +1476,27 @@ fn main() -> Result<()> {
                 json,
             })?
         }
+        Commands::LocalSendFile {
+            chat_name,
+            file,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            commands::local_send_file::cmd_local_send_file(
+                commands::local_send_file::LocalSendFileOptions {
+                    chat_name,
+                    file,
+                    max_file_mb: config.ax.max_file_mb.unwrap_or(config::DEFAULT_MAX_FILE_MB),
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
+        }
         Commands::LocalSendPhoto {
             chat_name,
             file,
@@ -1494,7 +1618,21 @@ fn main() -> Result<()> {
             allow_side_effects: allow_watch_side_effects,
         })?,
         Commands::WatchCache { interval } => commands::auth::cmd_watch_cache(interval)?,
-        Commands::Doctor { loco } => commands::doctor::cmd_doctor(json, loco, &config)?,
+        Commands::Init {
+            yes,
+            skill,
+            allow_chat,
+            all_spaces,
+        } => commands::init::cmd_init(commands::init::InitOptions {
+            yes,
+            skill,
+            allow_chats: allow_chat,
+            all_spaces,
+            json,
+        })?,
+        Commands::Doctor { loco, chat } => {
+            commands::doctor::cmd_doctor(json, loco, chat.as_deref(), &config)?
+        }
     }
 
     if cli.completion_promise {

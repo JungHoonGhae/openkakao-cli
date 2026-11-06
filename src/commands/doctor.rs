@@ -2,8 +2,10 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 
 use crate::auth::get_credential_candidates;
+use crate::ax_send::AxCheckStatus;
 use crate::config::OpenKakaoConfig;
 use crate::credentials::load_credentials;
+use crate::error::ErrorCode;
 use crate::model::KakaoCredentials;
 use crate::rest::KakaoRestClient;
 use crate::state::{recovery_snapshot, safety_snapshot};
@@ -13,12 +15,75 @@ struct Check {
     name: String,
     status: CheckStatus,
     detail: String,
+    code: Option<&'static str>,
+    fix: Option<String>,
+}
+
+impl Default for Check {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            status: CheckStatus::Ok,
+            detail: String::new(),
+            code: None,
+            fix: None,
+        }
+    }
 }
 
 enum CheckStatus {
     Ok,
     Warn,
     Fail,
+}
+
+const HOMEBREW_FORMULA: &str = "junghoonghae/openkakao/openkakao-cli";
+const HOMEBREW_TAP: &str = "junghoonghae/openkakao";
+
+/// Whether Homebrew's trust store (`brew trust`, Homebrew 7+) trusts this
+/// formula or its tap. Unparseable data counts as untrusted.
+fn homebrew_trusts_formula(trust_json: &str) -> bool {
+    let Ok(trust) = serde_json::from_str::<serde_json::Value>(trust_json) else {
+        return false;
+    };
+    let listed = |key: &str, wanted: &str| {
+        trust[key]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(wanted)))
+    };
+    listed("trustedformulae", HOMEBREW_FORMULA) || listed("trustedtaps", HOMEBREW_TAP)
+}
+
+/// `brew trust` guidance, only when this binary was installed from the tap.
+fn homebrew_check() -> Option<Check> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    if !exe.to_string_lossy().contains("/Cellar/openkakao-cli/") {
+        return None;
+    }
+    let trust_path = std::env::var_os("XDG_CONFIG_HOME")
+        .map(|dir| std::path::PathBuf::from(dir).join("homebrew/trust.json"))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".homebrew/trust.json")))?;
+    let trusted = std::fs::read_to_string(&trust_path)
+        .map(|data| homebrew_trusts_formula(&data))
+        .unwrap_or(false);
+    Some(Check {
+        name: "Homebrew tap trust".into(),
+        status: if trusted {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        detail: if trusted {
+            format!("{HOMEBREW_FORMULA} is trusted")
+        } else {
+            format!(
+                "{HOMEBREW_FORMULA} is not in {}; Homebrew 7+ refuses to install or upgrade untrusted tap formulae",
+                trust_path.display()
+            )
+        },
+        code: (!trusted).then_some("homebrew_untrusted_tap"),
+        fix: (!trusted).then(|| format!("brew trust --formula {HOMEBREW_FORMULA}")),
+    })
 }
 
 fn format_remaining(remaining_secs: Option<u64>, until: Option<&str>) -> String {
@@ -29,7 +94,93 @@ fn format_remaining(remaining_secs: Option<u64>, until: Option<&str>) -> String 
     }
 }
 
-pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Result<()> {
+/// AX readiness checks shared with `init`.
+fn ax_checks(chat: Option<&str>) -> Vec<Check> {
+    crate::ax_send::diagnose(chat)
+        .into_iter()
+        .map(|check| Check {
+            name: check.name.into(),
+            status: match check.status {
+                AxCheckStatus::Ok => CheckStatus::Ok,
+                AxCheckStatus::Warn => CheckStatus::Warn,
+                AxCheckStatus::Fail => CheckStatus::Fail,
+            },
+            detail: check.detail,
+            code: check.code.map(ErrorCode::as_str),
+            fix: check.code.map(|code| code.fix().to_string()),
+        })
+        .collect()
+}
+
+/// Print AX readiness for `init` and report whether any check failed.
+pub(crate) fn print_ax_checks(json: bool) -> (bool, Vec<serde_json::Value>) {
+    let checks = ax_checks(None);
+    let failed = checks
+        .iter()
+        .any(|check| matches!(check.status, CheckStatus::Fail));
+    if !json {
+        print_checks(&checks);
+    }
+    (failed, checks.iter().map(check_json).collect())
+}
+
+fn check_json(c: &Check) -> serde_json::Value {
+    let mut item = serde_json::json!({
+        "check": c.name,
+        "status": match c.status {
+            CheckStatus::Ok => "ok",
+            CheckStatus::Warn => "warn",
+            CheckStatus::Fail => "fail",
+        },
+        "detail": c.detail,
+    });
+    if let Some(code) = c.code {
+        item["code"] = code.into();
+    }
+    if let Some(fix) = &c.fix {
+        item["fix"] = fix.clone().into();
+    }
+    item
+}
+
+fn print_checks(checks: &[Check]) {
+    for c in checks {
+        let (icon, color_fn): (&str, fn(&str) -> String) = match c.status {
+            CheckStatus::Ok => {
+                if color_enabled() {
+                    ("OK", |s: &str| format!("{}", s.green()))
+                } else {
+                    ("OK", |s: &str| s.to_string())
+                }
+            }
+            CheckStatus::Warn => {
+                if color_enabled() {
+                    ("WARN", |s: &str| format!("{}", s.yellow()))
+                } else {
+                    ("WARN", |s: &str| s.to_string())
+                }
+            }
+            CheckStatus::Fail => {
+                if color_enabled() {
+                    ("FAIL", |s: &str| format!("{}", s.red()))
+                } else {
+                    ("FAIL", |s: &str| s.to_string())
+                }
+            }
+        };
+        println!("  [{}] {}: {}", color_fn(icon), c.name, c.detail);
+        if let Some(fix) = &c.fix {
+            println!("         fix: {fix}");
+        }
+    }
+}
+
+pub fn cmd_doctor(
+    json: bool,
+    test_loco: bool,
+    chat: Option<&str>,
+    config: &OpenKakaoConfig,
+) -> Result<()> {
     let mut checks: Vec<Check> = Vec::new();
     let mut installed_version: Option<String> = None;
     let mut saved_app_version: Option<String> = None;
@@ -47,6 +198,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
         name: "State file".into(),
         status: CheckStatus::Ok,
         detail: recovery.path.clone(),
+        ..Default::default()
     });
     checks.push(Check {
         name: "Auth recovery state".into(),
@@ -71,6 +223,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 .unwrap_or("never"),
             recovery.last_recovery_source.as_deref().unwrap_or("none")
         ),
+        ..Default::default()
     });
     checks.push(Check {
         name: "Safety guards".into(),
@@ -89,6 +242,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
             if config.safety.allow_insecure_webhooks { "allowed" } else { "blocked" },
             safety.last_guard_reason.as_deref().unwrap_or("none")
         ),
+        ..Default::default()
     });
 
     // 1. KakaoTalk.app installed version
@@ -103,12 +257,14 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 app.bundle_id,
                 app.path.display()
             ),
+            ..Default::default()
         });
     } else {
         checks.push(Check {
             name: "KakaoTalk.app".into(),
             status: CheckStatus::Fail,
             detail: "No KakaoTalk bundle with the expected identifier in /Applications or ~/Applications".into(),
+            ..Default::default()
         });
     }
 
@@ -123,6 +279,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "KakaoTalk process".into(),
                 status: CheckStatus::Ok,
                 detail: format!("Running (PID: {})", pids.replace('\n', ", ")),
+                ..Default::default()
             });
         }
         _ => {
@@ -130,9 +287,32 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "KakaoTalk process".into(),
                 status: CheckStatus::Warn,
                 detail: "Not running. Start KakaoTalk to refresh tokens.".into(),
+                ..Default::default()
             });
         }
     }
+
+    // 2b. Login-free AX path: permission, sign-in, main window on this Space,
+    // chat-list search field, and (with --chat) the open chat window.
+    // Read-only: nothing is pressed, opened, or raised.
+    checks.extend(ax_checks(chat));
+    checks.push(Check {
+        name: "AX send gate".into(),
+        status: if config.safety.allow_ax_send && !config.safety.allowed_send_chats.is_empty() {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        detail: format!(
+            "allow_ax_send={}, {} allowlisted chat(s)",
+            config.safety.allow_ax_send,
+            config.safety.allowed_send_chats.len()
+        ),
+        fix: (!config.safety.allow_ax_send || config.safety.allowed_send_chats.is_empty())
+            .then(|| "openkakao-cli init --allow-chat \"<exact chat name>\"".to_string()),
+        ..Default::default()
+    });
+    checks.extend(homebrew_check());
 
     // 3. Cache.db existence and freshness
     let home = dirs::home_dir().unwrap_or_default();
@@ -172,6 +352,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                     name: "Cache.db".into(),
                     status,
                     detail: format!("{}KB, modified {}", size_kb, modified),
+                    ..Default::default()
                 });
             }
             Err(e) => {
@@ -179,6 +360,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                     name: "Cache.db".into(),
                     status: CheckStatus::Warn,
                     detail: format!("Exists but unreadable: {}", e),
+                    ..Default::default()
                 });
             }
         }
@@ -187,6 +369,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
             name: "Cache.db".into(),
             status: CheckStatus::Fail,
             detail: "Not found. Has KakaoTalk been used on this Mac?".into(),
+            ..Default::default()
         });
     }
 
@@ -206,6 +389,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                                 creds.app_version,
                                 creds.oauth_token.chars().take(8).collect::<String>()
                             ),
+                            ..Default::default()
                         });
                     }
                     Ok(None) => {
@@ -213,6 +397,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                             name: "Saved credentials".into(),
                             status: CheckStatus::Warn,
                             detail: "File exists but empty/invalid".into(),
+                            ..Default::default()
                         });
                     }
                     Err(e) => {
@@ -220,6 +405,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                             name: "Saved credentials".into(),
                             status: CheckStatus::Warn,
                             detail: format!("Parse error: {}", e),
+                            ..Default::default()
                         });
                     }
                 }
@@ -231,6 +417,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         "Not found. Run 'openkakao-cli login --save'. ({})",
                         path.display()
                     ),
+                    ..Default::default()
                 });
             }
         }
@@ -239,6 +426,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "Saved credentials".into(),
                 status: CheckStatus::Fail,
                 detail: format!("Cannot determine path: {}", e),
+                ..Default::default()
             });
         }
     }
@@ -250,6 +438,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "Version match".into(),
                 status: CheckStatus::Ok,
                 detail: format!("Installed and saved both v{}", installed),
+                ..Default::default()
             });
         } else {
             checks.push(Check {
@@ -259,6 +448,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                     "Installed v{} != saved v{}. Run `relogin --fresh-xvc` to re-authenticate.",
                     installed, saved
                 ),
+                ..Default::default()
             });
         }
     }
@@ -283,6 +473,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         name: "REST API token".into(),
                         status: CheckStatus::Ok,
                         detail: format!("Valid (user_id={})", creds.user_id),
+                        ..Default::default()
                     });
                 }
                 Ok(false) => {
@@ -291,6 +482,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         status: CheckStatus::Fail,
                         detail: "Token rejected. Open KakaoTalk, browse chats, then re-login."
                             .into(),
+                        ..Default::default()
                     });
                 }
                 Err(e) => {
@@ -298,6 +490,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         name: "REST API token".into(),
                         status: CheckStatus::Fail,
                         detail: format!("Request failed: {}", e),
+                        ..Default::default()
                     });
                 }
             },
@@ -306,6 +499,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                     name: "REST API token".into(),
                     status: CheckStatus::Fail,
                     detail: format!("Client init failed: {}", e),
+                    ..Default::default()
                 });
             }
         },
@@ -314,6 +508,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "REST API token".into(),
                 status: CheckStatus::Fail,
                 detail: format!("No credentials: {}", e),
+                ..Default::default()
             });
         }
     }
@@ -355,6 +550,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         name: "LOCO booking (GETCONF)".into(),
                         status: CheckStatus::Ok,
                         detail: format!("hosts=[{}], ports=[{}]", hosts, ports),
+                        ..Default::default()
                     });
                 }
                 Err(e) => {
@@ -362,6 +558,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                         name: "LOCO booking (GETCONF)".into(),
                         status: CheckStatus::Fail,
                         detail: format!("Connection failed: {}", e),
+                        ..Default::default()
                     });
                 }
             }
@@ -370,6 +567,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "LOCO booking (GETCONF)".into(),
                 status: CheckStatus::Fail,
                 detail: "Skipped (no credentials)".into(),
+                ..Default::default()
             });
         }
     }
@@ -418,6 +616,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "Local DB (SQLCipher)".into(),
                 status: db_status,
                 detail,
+                ..Default::default()
             });
         }
         Err(e) => {
@@ -425,6 +624,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
                 name: "Local DB (SQLCipher)".into(),
                 status: CheckStatus::Warn,
                 detail: format!("Check failed: {}", e),
+                ..Default::default()
             });
         }
     }
@@ -440,6 +640,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
             CheckStatus::Warn
         },
         detail: notif.detail,
+        ..Default::default()
     });
 
     // 7b. LOCO write safety
@@ -455,6 +656,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
         } else {
             "Disabled (safe). Enable with safety.allow_loco_write = true".into()
         },
+        ..Default::default()
     });
 
     // 8. Protocol constants
@@ -465,24 +667,12 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
             "handshake_key_type=16, encrypt_type=3 (AES-128-GCM), RSA=2048-bit e=3, booking={}:{}",
             "booking-loco.kakao.com", 443
         ),
+        ..Default::default()
     });
 
     // Output
     if json {
-        let items: Vec<serde_json::Value> = checks
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "check": c.name,
-                    "status": match c.status {
-                        CheckStatus::Ok => "ok",
-                        CheckStatus::Warn => "warn",
-                        CheckStatus::Fail => "fail",
-                    },
-                    "detail": c.detail,
-                })
-            })
-            .collect();
+        let items: Vec<serde_json::Value> = checks.iter().map(check_json).collect();
         let out = serde_json::json!({
             "checks": items,
             "recovery_state": recovery,
@@ -492,32 +682,7 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
     } else {
         println!("openkakao-cli doctor (v{})", VERSION);
         println!();
-        for c in &checks {
-            let (icon, color_fn): (&str, fn(&str) -> String) = match c.status {
-                CheckStatus::Ok => {
-                    if color_enabled() {
-                        ("OK", |s: &str| format!("{}", s.green()))
-                    } else {
-                        ("OK", |s: &str| s.to_string())
-                    }
-                }
-                CheckStatus::Warn => {
-                    if color_enabled() {
-                        ("WARN", |s: &str| format!("{}", s.yellow()))
-                    } else {
-                        ("WARN", |s: &str| s.to_string())
-                    }
-                }
-                CheckStatus::Fail => {
-                    if color_enabled() {
-                        ("FAIL", |s: &str| format!("{}", s.red()))
-                    } else {
-                        ("FAIL", |s: &str| s.to_string())
-                    }
-                }
-            };
-            println!("  [{}] {}: {}", color_fn(icon), c.name, c.detail);
-        }
+        print_checks(&checks);
 
         if !test_loco {
             println!();
@@ -529,4 +694,43 @@ pub fn cmd_doctor(json: bool, test_loco: bool, config: &OpenKakaoConfig) -> Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn homebrew_trust_accepts_the_formula_or_its_tap() {
+        assert!(homebrew_trusts_formula(
+            r#"{"trustedformulae": ["junghoonghae/openkakao/openkakao-cli"], "trustedtaps": []}"#
+        ));
+        assert!(homebrew_trusts_formula(
+            r#"{"trustedformulae": [], "trustedtaps": ["junghoonghae/openkakao"]}"#
+        ));
+        assert!(!homebrew_trusts_formula(
+            r#"{"trustedformulae": ["someone/else/openkakao-cli"]}"#
+        ));
+        assert!(!homebrew_trusts_formula("not json"));
+    }
+
+    #[test]
+    fn check_json_includes_code_and_fix_only_when_present() {
+        let plain = check_json(&Check {
+            name: "x".into(),
+            detail: "fine".into(),
+            ..Default::default()
+        });
+        assert!(plain.get("code").is_none() && plain.get("fix").is_none());
+        let coded = check_json(&Check {
+            name: "y".into(),
+            status: CheckStatus::Warn,
+            code: Some("chat_list_filtered"),
+            fix: Some("clear it".into()),
+            ..Default::default()
+        });
+        assert_eq!(coded["status"], "warn");
+        assert_eq!(coded["code"], "chat_list_filtered");
+        assert_eq!(coded["fix"], "clear it");
+    }
 }

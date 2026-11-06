@@ -16,7 +16,25 @@ pub struct OpenKakaoConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub safety: SafetyConfig,
+    #[serde(default)]
+    pub ax: AxConfig,
 }
+
+/// Login-free AX automation (`local-send*`, `ax-read`, `safe-send approve`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AxConfig {
+    /// Seconds of keyboard/mouse idle time required before KakaoTalk may be
+    /// raised (default 2, 0 disables). `--wait-idle` overrides it.
+    pub wait_idle_secs: Option<u64>,
+    /// Open a chat that has no open window from the chat list, raising
+    /// KakaoTalk briefly (default false). `--open-if-needed` enables it.
+    #[serde(default)]
+    pub open_if_needed: bool,
+    /// Largest file `local-send-file` accepts, in MiB (default 300).
+    pub max_file_mb: Option<u64>,
+}
+
+pub const DEFAULT_MAX_FILE_MB: u64 = 300;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ModeConfig {
@@ -128,5 +146,18 @@ mod tests {
         assert_eq!(config.safety.webhook_timeout_secs, Some(10));
         assert!(!config.safety.allow_insecure_webhooks);
         assert!(!config.safety.allow_loco_write);
+        assert!(!config.ax.open_if_needed);
+        assert!(config.ax.wait_idle_secs.is_none());
+        assert!(config.ax.max_file_mb.is_none());
+    }
+
+    #[test]
+    fn ax_section_parses() {
+        let config: OpenKakaoConfig =
+            toml::from_str("[ax]\nwait_idle_secs = 5\nopen_if_needed = true\nmax_file_mb = 50\n")
+                .unwrap();
+        assert_eq!(config.ax.wait_idle_secs, Some(5));
+        assert!(config.ax.open_if_needed);
+        assert_eq!(config.ax.max_file_mb, Some(50));
     }
 }
