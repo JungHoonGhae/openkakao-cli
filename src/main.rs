@@ -71,6 +71,25 @@ struct Cli {
         help = "Print [DONE] to stdout after command completes successfully"
     )]
     completion_promise: bool,
+    #[arg(
+        long,
+        global = true,
+        value_name = "SECS",
+        help = "AX: keyboard/mouse idle seconds required before a --fallback-keys route raises KakaoTalk (default 2, 0 disables)"
+    )]
+    wait_idle: Option<u64>,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: open a chat with no open window from the chat list's context menu (focus-free; marks it read)"
+    )]
+    open_if_needed: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: use the older raise + keys routes (Return, clipboard ⌘V, row double-click) for builds without the AX buttons"
+    )]
+    fallback_keys: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -537,6 +556,82 @@ enum Commands {
         #[arg(long, help = "Preview the action without executing")]
         dry_run: bool,
     },
+    /// Send one file (any type, e.g. .docx/.pdf/.zip) via AX automation
+    /// through the official KakaoTalk app
+    #[command(
+        long_about = "Send one file (any type) via AX automation through the official KakaoTalk app, \
+                      with no server login and without raising KakaoTalk.\n\nThe file must exist, be a \
+                      non-empty regular file (symlinks are resolved) with a UTF-8 path, and fit \
+                      [ax] max_file_mb (default 300 MiB). The open chat window's 파일전송 button, the \
+                      open panel's sidebar folder and file rows, 열기 and the preview's 1개 전송 are \
+                      all driven by Accessibility; the send happens only after macOS device-owner \
+                      authentication. A file outside the top level of Desktop/Documents/Downloads \
+                      is staged as a same-name hard link (or copy) in ~/Downloads and removed after \
+                      a verified send. Delivery is verified by a new outgoing row showing the file \
+                      name or [파일]/[사진]. Requires allow_ax_send and an exact allowed_send_chats \
+                      entry (not for --dry-run). --fallback-keys uses the older clipboard + ⌘V route, \
+                      which raises KakaoTalk briefly after --wait-idle and overwrites the clipboard."
+    )]
+    LocalSendFile {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// Path to the file to send
+        file: String,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Preview the action without executing")]
+        dry_run: bool,
+    },
+    /// Reply to one message in an open chat window, focus-free (experimental)
+    #[command(
+        long_about = "Reply to one message bubble in an open chat window via AX, without raising \
+                      KakaoTalk (experimental; verified on KakaoTalk 26.9.0). The target is the newest \
+                      text bubble (--to-last) or the one bubble whose whole text equals --match \
+                      (two matches refuse). Reply mode must be confirmed (composer and banner) before \
+                      any text is inserted. --dry-run reads the chat and shows the target only. Same \
+                      allow_ax_send, exact allowlist and device-owner authentication as local-send."
+    )]
+    LocalReply {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// Reply text
+        message: String,
+        /// Reply to the newest text bubble
+        #[arg(
+            long,
+            conflicts_with = "match_text",
+            required_unless_present = "match_text"
+        )]
+        to_last: bool,
+        /// Reply to the one bubble whose whole text is exactly this
+        #[arg(long = "match", value_name = "TEXT")]
+        match_text: Option<String>,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show the targeted bubble without acting")]
+        dry_run: bool,
+    },
+    /// Edit one of your own messages in an open chat window, focus-free (experimental)
+    #[command(
+        long_about = "Edit one of your own message bubbles via AX, without raising KakaoTalk \
+                      (experimental; verified on KakaoTalk 26.9.0). --match must equal the bubble's \
+                      whole text (two matches refuse). Edit mode must load exactly that text before it \
+                      is replaced, and success requires the bubble to show the new text with KakaoTalk's \
+                      수정됨 mark. The new text is used as given (no prefix). --dry-run shows the target only."
+    )]
+    LocalEdit {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// The bubble's current whole text
+        #[arg(long = "match", value_name = "OLD_TEXT")]
+        old: String,
+        /// The new text
+        new: String,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show the targeted bubble without acting")]
+        dry_run: bool,
+    },
     /// Send one photo via AX automation through the official KakaoTalk app
     LocalSendPhoto {
         chat_name: String,
@@ -613,11 +708,39 @@ enum Commands {
         #[arg(long)]
         hook_fail_fast: bool,
     },
+    /// First-run setup: AX readiness checks, send allowlist, agent skill
+    #[command(
+        long_about = "First-run setup for the login-free AX path. Shows read-only readiness checks \
+                      (Accessibility, sign-in, main window on this Space, chat-list search), writes \
+                      ~/.config/openkakao/config.toml (chats are only allowlisted from names you type \
+                      or pass with --allow-chat; allowlisting one also sets allow_ax_send = true), and \
+                      installs the openkakao-cli agent skill (npx skills add, or a direct SKILL.md \
+                      download when npx is missing). It offers to launch KakaoTalk in the background \
+                      and to assign it to All Desktops (the Dock restarts once; non-interactive runs \
+                      do this only with --all-spaces). Safe to re-run."
+    )]
+    Init {
+        /// Non-interactive: accept defaults (no skill unless --skill is passed; KakaoTalk is not launched)
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Where to install the agent skill
+        #[arg(long, value_enum)]
+        skill: Option<commands::init::SkillTarget>,
+        /// Exact chat display name local-send may send to (repeatable)
+        #[arg(long = "allow-chat", value_name = "CHAT_NAME")]
+        allow_chat: Vec<String>,
+        /// Assign KakaoTalk to All Desktops without asking (restarts the Dock once)
+        #[arg(long)]
+        all_spaces: bool,
+    },
     /// Run diagnostic checks on KakaoTalk installation and connectivity
     Doctor {
         /// Also test LOCO booking connectivity (makes network request)
         #[arg(long)]
         loco: bool,
+        /// Also inspect this open chat window (read-only): composer, 전송 button, file button
+        #[arg(long, value_name = "CHAT_NAME")]
+        chat: Option<String>,
     },
 }
 
@@ -663,16 +786,17 @@ fn require_loco_write(config: &config::OpenKakaoConfig) -> Result<()> {
 
 fn require_ax_send(config: &config::OpenKakaoConfig) -> Result<()> {
     if !config.safety.allow_ax_send {
-        anyhow::bail!(
+        return Err(error::coded(
+            error::ErrorCode::AxSendDisabled,
             "AX-automation send is disabled by default.\n\
-             local-send / local-send-photo drive the real KakaoTalk window (types\n\
-             your message or picks your file, then hits Enter on your behalf) —\n\
+             local-send / local-send-file / local-send-photo drive the real KakaoTalk\n\
+             window (insert your message or file, then send it on your behalf) —\n\
              treat them with the same care as `send`.\n\n\
              To enable, add to ~/.config/openkakao/config.toml:\n\n\
              [safety]\n\
              allow_ax_send = true\n\n\
-             KakaoTalk must be running and already logged in; no server/LOCO contact is made."
-        );
+             KakaoTalk must be running and already logged in; no server/LOCO contact is made.",
+        ));
     }
     Ok(())
 }
@@ -688,14 +812,17 @@ fn require_allowed_send_chat(config: &config::OpenKakaoConfig, chat_name: &str) 
         .iter()
         .any(|c| c == chat_name)
     {
-        anyhow::bail!(
-            "chat \"{chat_name}\" is not in the local-send allowlist.\n\n\
-             local-send / local-send-photo match chats by display-name text scraped from\n\
-             the KakaoTalk UI, not a chat-id, so an explicit allowlist is required to\n\
-             avoid sending to the wrong chat. Add to ~/.config/openkakao/config.toml:\n\n\
-             [safety]\n\
-             allowed_send_chats = [\"{chat_name}\"]"
-        );
+        return Err(error::coded(
+            error::ErrorCode::ChatNotAllowed,
+            format!(
+                "chat \"{chat_name}\" is not in the local-send allowlist.\n\n\
+                 local-send / local-send-file / local-send-photo match chats by display-name\n\
+                 text scraped from the KakaoTalk UI, not a chat-id, so an explicit allowlist is\n\
+                 required to avoid sending to the wrong chat. Add to ~/.config/openkakao/config.toml:\n\n\
+                 [safety]\n\
+                 allowed_send_chats = [\"{chat_name}\"]"
+            ),
+        ));
     }
     Ok(())
 }
@@ -715,18 +842,54 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalSearch { .. }
             | Commands::LocalSchema
             | Commands::LocalSend { .. }
+            | Commands::LocalSendFile { .. }
+            | Commands::LocalReply { .. }
+            | Commands::LocalEdit { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxRead { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
+            | Commands::Init { .. }
             | Commands::Doctor { .. }
     )
 }
 
-fn main() -> Result<()> {
+fn main() {
     let cli = Cli::parse();
+    let json = cli.json;
+    if let Err(error) = run(cli) {
+        // Agents read stdout: with --json, failures are a JSON object there
+        // too, with a stable `code` and a `fix` hint. Humans get stderr.
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&error::error_json(&error))
+                    .unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+        eprintln!("Error: {error:?}");
+        if let Some(code) = error::error_code(&error) {
+            eprintln!("Fix ({}): {}", code.as_str(), code.fix());
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     let config = load_config()?;
+    openkakao_cli::human_auth::set_device_owner_auth_grace(
+        config.safety.device_owner_auth_grace_secs,
+    );
+    ax_send::set_policy(ax_send::AxPolicy {
+        wait_idle: std::time::Duration::from_secs(
+            cli.wait_idle
+                .or(config.ax.wait_idle_secs)
+                .unwrap_or(ax_send::DEFAULT_WAIT_IDLE.as_secs()),
+        ),
+        open_if_needed: cli.open_if_needed || config.ax.open_if_needed,
+        fallback_keys: cli.fallback_keys,
+    });
     set_auth_policy(AuthPolicy::from_config(&config.auth));
     let json = cli.json;
     let unattended = cli.unattended || config.mode.unattended;
@@ -1373,6 +1536,74 @@ fn main() -> Result<()> {
                 json,
             })?
         }
+        Commands::LocalSendFile {
+            chat_name,
+            file,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            commands::local_send_file::cmd_local_send_file(
+                commands::local_send_file::LocalSendFileOptions {
+                    chat_name,
+                    file,
+                    max_file_mb: config.ax.max_file_mb.unwrap_or(config::DEFAULT_MAX_FILE_MB),
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
+        }
+        Commands::LocalReply {
+            chat_name,
+            message,
+            to_last,
+            match_text,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            let target = match match_text {
+                Some(text) if !to_last => ax_send::BubbleTarget::Text(text),
+                _ => ax_send::BubbleTarget::Last,
+            };
+            commands::local_actions::cmd_local_reply(
+                commands::local_actions::BubbleActionOptions {
+                    chat_name,
+                    target,
+                    text: format_outgoing_message(&message, no_prefix),
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
+        }
+        Commands::LocalEdit {
+            chat_name,
+            old,
+            new,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                require_allowed_send_chat(&config, &chat_name)?;
+            }
+            commands::local_actions::cmd_local_edit(commands::local_actions::BubbleActionOptions {
+                chat_name,
+                target: ax_send::BubbleTarget::Text(old),
+                text: new,
+                skip_confirm: yes,
+                dry_run,
+                json,
+            })?
+        }
         Commands::LocalSendPhoto {
             chat_name,
             file,
@@ -1494,7 +1725,21 @@ fn main() -> Result<()> {
             allow_side_effects: allow_watch_side_effects,
         })?,
         Commands::WatchCache { interval } => commands::auth::cmd_watch_cache(interval)?,
-        Commands::Doctor { loco } => commands::doctor::cmd_doctor(json, loco, &config)?,
+        Commands::Init {
+            yes,
+            skill,
+            allow_chat,
+            all_spaces,
+        } => commands::init::cmd_init(commands::init::InitOptions {
+            yes,
+            skill,
+            allow_chats: allow_chat,
+            all_spaces,
+            json,
+        })?,
+        Commands::Doctor { loco, chat } => {
+            commands::doctor::cmd_doctor(json, loco, chat.as_deref(), &config)?
+        }
     }
 
     if cli.completion_promise {
@@ -2576,6 +2821,62 @@ mod tests {
                 assert!(!dry_run);
             }
             other => panic!("expected local-send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_reply_and_edit_commands_parse() {
+        let cli = Cli::try_parse_from([
+            "openkakao-cli",
+            "local-reply",
+            "나와의 채팅",
+            "답장",
+            "--match",
+            "원문",
+            "--dry-run",
+        ])
+        .expect("local-reply --match should parse");
+        match cli.command {
+            Commands::LocalReply {
+                to_last,
+                match_text,
+                dry_run,
+                ..
+            } => {
+                assert!(!to_last);
+                assert_eq!(match_text.as_deref(), Some("원문"));
+                assert!(dry_run);
+            }
+            other => panic!("expected local-reply, got {other:?}"),
+        }
+        // One of --to-last / --match is required, and they conflict.
+        assert!(Cli::try_parse_from(["openkakao-cli", "local-reply", "c", "m"]).is_err());
+        assert!(Cli::try_parse_from([
+            "openkakao-cli",
+            "local-reply",
+            "c",
+            "m",
+            "--to-last",
+            "--match",
+            "x"
+        ])
+        .is_err());
+        let cli = Cli::try_parse_from([
+            "openkakao-cli",
+            "local-edit",
+            "c",
+            "--match",
+            "old",
+            "new",
+            "-y",
+        ])
+        .expect("local-edit should parse");
+        match cli.command {
+            Commands::LocalEdit { old, new, yes, .. } => {
+                assert_eq!((old.as_str(), new.as_str()), ("old", "new"));
+                assert!(yes);
+            }
+            other => panic!("expected local-edit, got {other:?}"),
         }
     }
 

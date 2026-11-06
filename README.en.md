@@ -58,24 +58,36 @@
 No server login needed — just KakaoTalk running and already logged in.
 
 ```bash
-# Homebrew
+# Homebrew (Homebrew 7+ must trust a third-party tap formula before installing or upgrading it)
 brew tap JungHoonGhae/openkakao
+brew trust --formula junghoonghae/openkakao/openkakao-cli
 brew install openkakao-cli
 
-# 1. Allowlist the chat before any real send (required — guards against sending to the wrong chat)
-#    ~/.config/openkakao/config.toml
-#    [safety]
-#    allow_ax_send = true
-#    allowed_send_chats = ["the exact display name shown in your chat list"]
+# 1. First-run setup: checks Accessibility, sign-in and Spaces, writes the send
+#    allowlist, installs the agent skill
+openkakao-cli init                                                   # interactive
+openkakao-cli init --yes --allow-chat "your memo chat's display name" --skill claude   # scripted
+#    Only names you type or pass are allowlisted ([safety] allow_ax_send /
+#    allowed_send_chats in ~/.config/openkakao/config.toml). Safe to re-run.
 
-# 2. Send a message — no server contact, drives the real KakaoTalk UI directly
+# 2. Send (no server contact; an open chat window is used without raising KakaoTalk)
 openkakao-cli local-send "chat display name" "Hello from CLI!" --dry-run   # preview
 openkakao-cli local-send "chat display name" "Hello from CLI!" -y         # actually send
-openkakao-cli local-send-photo "chat display name" ./family.jpg --dry-run  # photo preview
-openkakao-cli local-send-photo "chat display name" ./family.jpg -y        # send photo via the official app
+openkakao-cli local-send-file "chat display name" ./report.docx --dry-run  # any file: docx, pdf, zip, ...
+openkakao-cli local-send-file "chat display name" ./report.docx -y        # send through the official app
+openkakao-cli local-send-photo "chat display name" ./family.jpg -y        # send a photo
 
 # 3. Read recent messages — same AX approach, scrapes what's rendered on screen
 openkakao-cli ax-read "chat display name" -n 20
+
+# Read-only check of an open chat window (composer, 전송 button, file button)
+openkakao-cli doctor --chat "chat display name"
+
+# (experimental) Reply or edit in an open chat window without taking focus.
+# The target bubble must match its whole text exactly.
+openkakao-cli local-reply "chat display name" "reply text" --to-last --dry-run   # show the target only
+openkakao-cli local-reply "chat display name" "reply text" --match "whole original text" -y
+openkakao-cli local-edit "chat display name" --match "your whole original text" "fixed text" -y
 
 # 4. Detect incoming messages (AX) — polls the chat list and fires a hook/webhook
 #    when a chat's unread count rises (no server contact)
@@ -91,6 +103,15 @@ openkakao-cli notif-watch --replay-existing --json
 # Recommended for long-running jobs: persist before delivery and retry after restart
 openkakao-cli notif-watch --durable --json
 ```
+
+> [!IMPORTANT]
+> **The default paths never take your focus** (verified on KakaoTalk 26.9.0, macOS 26): KakaoTalk is not raised and no synthetic keyboard or mouse input is posted.
+> - `ax-read` and `local-send*` use an **already-open chat window** whose title matches exactly; two open windows with that title are refused.
+> - Text is inserted through the composer's `AXSelectedText` and sent with `AXPress` on the `전송` button.
+> - Files and photos: `파일전송` button → the open panel's sidebar folder → the file row → `열기` → the preview's `1개 전송`, all through Accessibility. A file outside the top level of Desktop, Documents or Downloads is hard-linked (copied across volumes) into `~/Downloads` under its own name for the send and removed once delivery is verified; an existing different file with that name stops with `staging_conflict`.
+> - A chat without an open window returns `chat_window_not_open` with a fix by default. `--open-if-needed` opens it from the chat-list row's context menu (`채팅방 열기`), still without raising KakaoTalk, which marks the chat as read. A merely hidden main window is shown again through the app's own `창 > 채팅` menu item.
+>
+> For builds without the `전송` button, `--fallback-keys` keeps the older raise-and-key routes: Return for text, clipboard plus ⌘V for files, double-click to open a chat. Only these raise KakaoTalk, after the keyboard and mouse have been idle for `--wait-idle` seconds (default 2, `[ax] wait_idle_secs`), or stop with `user_active` after 60 s. They restore the previous app afterwards, error paths included. A background KakaoTalk ignores pid-posted key events, so key-based steps work only while it is frontmost.
 
 > [!TIP]
 > **`ax-watch` vs `notif-watch`** — both detect incoming messages without login. `notif-watch` reads the macOS Notification Center DB (a plaintext SQLite), so it **works even when the KakaoTalk window is closed, minimized, or on another Space**, and since notifications only fire for received messages it **excludes your own sends automatically**. Existing notifications only establish a baseline by default; pass `--replay-existing` to process retained notifications that arrived while the watcher was down. For long-running jobs, prefer `--durable`: it persists events to `~/.config/openkakao/receive_inbox.db`, atomically leases each event to one worker, and retries failures with exponential backoff. After eight failures an event is quarantined so later events can proceed; terminal records missing from Notification Center are pruned after a 24-hour grace period. Delivery is **at least once** (use `chat_id` + `log_id` as the downstream idempotency key). The trade-off: **muted / notifications-off chats** and the **chat you're currently focused on** post no notification, so they aren't seen, and messages already removed from Notification Center cannot be replayed. Run `ax-watch` alongside it if you need those chats with the window open. Events are NDJSON with `event_type`, `chat_name`, `chat_id` (room id), `log_id` (message id), `message`, `attachment`, `received_at`.
@@ -151,10 +172,10 @@ openkakao-cli --unattended --allow-watch-side-effects watch \
   --hook-cmd 'jq . > /tmp/openkakao-event.json'
 ```
 
-To use it directly from Claude Code:
+To use it directly from Claude Code or Codex:
 
 ```bash
-npx skills add JungHoonGhae/skills@openkakao-cli
+openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/skills@openkakao-cli
 ```
 
 ## Highlights
@@ -191,7 +212,7 @@ To protect your account, commands that write to the server require explicit opt-
 allow_loco_write = true
 ```
 
-`local-send` and `local-send-photo` (AX-based real sending) are also disabled by default (`local-send` since v1.4.0), and need their own opt-in plus a **chat allowlist**. There is no chat-id left to cross-check the target against, so a real send combines the allowlist with a unique exact-name match in the chat list, KakaoTalk code-signature verification, and macOS user authentication immediately before sending:
+`local-send`, `local-send-file` and `local-send-photo` (AX-based real sending) are also disabled by default (`local-send` since v1.4.0), and need their own opt-in plus a **chat allowlist** (`openkakao-cli init --allow-chat "<name>"`). There is no chat-id left to cross-check the target against, so a real send combines the allowlist with exactly one open chat window titled exactly like the chat (or, when `--open-if-needed` opens it, one unique exact-name chat-list row), KakaoTalk code-signature verification, and macOS user authentication immediately before sending:
 
 ```toml
 # ~/.config/openkakao/config.toml
@@ -217,7 +238,7 @@ openkakao-cli safe-send approve <intent_id>
 openkakao-cli safe-send cancel <intent_id>
 ```
 
-Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires both the interactive 12-character code and macOS device-owner authentication. A direct real `local-send` or `local-send-photo` requires the same OS authentication. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the final Return key is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after Return may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, the chat list must contain one unique exact-name row, and a non-empty composer is refused. The selected row and composer are read back immediately before Return, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
+Proposals expire after 15 minutes and live in `~/.config/openkakao/safe_send_outbox.db` with `0600` permissions. Approval has no unattended bypass: it requires both the interactive 12-character code and macOS device-owner authentication. A direct real `local-send` or `local-send-photo` requires the same OS authentication. With `[safety] device_owner_auth_grace_secs` (default 0) one approval stays valid for that many seconds, sudo-style (max 900). The approval time is a file your account can write, so during the window any local process (a shell, an agent) can send to allowlisted chats or extend the window; enable it only on a Mac where every local process is yours. The outbox enforces at least 10 seconds between claims, 3 sends per chat per hour, 10 globally per hour, and 20 globally per day. A failure proven to occur before the commit (the `전송` press, or Return with `--fallback-keys`) is classified as `not_sent`, so the proposal can be reviewed again; an ambiguous result after the commit may have been delivered, or an interrupted execution, becomes `uncertain` and is never retried automatically. The running process must have KakaoTalk's official bundle/team code signature, duplicate exact-title windows or chat-list rows are refused, and a non-empty composer is refused. The target window and composer are read back immediately before the commit, and completion is verified only when the composer clears and an additional exact-text **outgoing** bubble appears.
 
 This path is implemented directly with macOS Accessibility/CoreGraphics inside `openkakao-cli`. Orca and agent `$computer-use` skills are not installation or runtime dependencies; agents use the domain-level `safe-send propose` plus human approval instead of generic UI click or keyboard actions.
 
@@ -235,13 +256,39 @@ Read-only operations are always available:
 | `read <id> --rest` | Read messages via REST | REST |
 | `send ... --dry-run` | Preview send without executing | None |
 | `local-send ... --dry-run` | Preview an AX send without executing | None |
+| `local-send-file ... --dry-run` | Preview an AX file send (path and size validated) | None |
 | `local-send-photo ... --dry-run` | Preview an AX photo send without executing | None |
+| `doctor --chat <chat_name>` | Inspect an open chat window (composer, `전송` and file buttons); presses nothing | None |
+| `local-reply/local-edit ... --dry-run` | (experimental) Find and show the bubble a reply/edit would target | None |
 | `safe-send propose/list` | Persist or inspect send proposals (never sends) | None |
 
 > [!NOTE]
-> `local-send`/`local-send-photo`/`ax-read`/`ax-watch` need to find KakaoTalk's **main chat-list window** via the macOS Accessibility API. If that window is **minimized**, or on a different **macOS Space** (virtual desktop) than the one you're currently viewing, it won't be found — restoring it automatically isn't possible without risking a stolen foreground focus, so these commands give a clear error and ask you to restore it by hand instead. If this keeps happening, a one-time fix is: right-click the KakaoTalk Dock icon → Options → Assign To → All Desktops.
+> `ax-read`/`local-send*` on an already-open chat window do not need the main window. `ax-watch` and `--open-if-needed` need to find KakaoTalk's **main chat-list window** via the macOS Accessibility API. If that window is **minimized**, or on a different **macOS Space** (virtual desktop) than the one you're currently viewing, it won't be found (a merely hidden one is shown again focus-free through `창 > 채팅`; otherwise you get a clear error and fix). If this keeps happening, run `openkakao-cli init --all-spaces` once (the same as Dock → Options → Assign To → All Desktops).
 >
 > **`notif-watch` is not subject to this** — it reads the macOS Notification Center DB rather than an AX window, so it works regardless of window state (but muted / focused chats post no notification and so aren't seen).
+
+## Troubleshooting
+
+With `--json`, failures print `{"error": {"code", "message", "fix"}}` on stdout. `doctor` (read-only) checks the same things up front.
+
+| code | Cause | Fix |
+|------|-------|-----|
+| `accessibility_not_granted` | The app running the CLI lacks Accessibility | System Settings → Privacy & Security → Accessibility: enable your terminal (or Orca, ...). Over SSH add `/usr/libexec/sshd-keygen-wrapper` |
+| `kakaotalk_not_running` | KakaoTalk is not running | `open -g -b com.kakao.KakaoTalkMac` (background launch) or `openkakao-cli init` |
+| `kakaotalk_signed_out` | Only the `로그인` window is showing | Sign in on this Mac |
+| `main_window_not_visible`, `kakaotalk_not_on_all_spaces` | Main window closed or on another Space | `openkakao-cli init --all-spaces` (records Dock → Options → Assign To → All Desktops and restarts the Dock once) |
+| `chat_window_not_open` | No open window titled exactly like the chat | Open the chat window once, or pass `--open-if-needed` |
+| `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
+| `send_button_missing` | This build exposes no `전송` button | `--fallback-keys` |
+| `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc**: KakaoTalk closes its windows on Esc |
+| `composer_busy` | The composer holds a draft or a pending reply/edit | Send, clear or cancel it (the X next to its banner) in KakaoTalk |
+| `message_not_found`, `message_ambiguous` | No bubble matched, or several share the exact text | Only the newest ~40 rows are searched; scroll the bubble into view, or use `--to-last` |
+| `action_unverified` | KakaoTalk did not show the expected reply/edit state, so nothing more was done | Check the chat window and close a leftover banner with its X (never Esc) |
+| `staging_conflict` | `~/Downloads` already has a different file with this name | Send it from the top level of Downloads, Desktop or Documents, or rename it |
+| `user_active` | You kept typing during a `--fallback-keys` raise | Retry when idle, or `--wait-idle 0` |
+| `delivery_uncertain` | The send may have happened but was not proven | Check KakaoTalk before retrying; never retry blindly |
+| `file_type_refused` | KakaoTalk's file picker greys out this file type (seen with `.bin`) | Zip it, or send a document/image type |
+| Homebrew `untrusted tap` | Homebrew 7+ trust policy | `brew trust --formula junghoonghae/openkakao/openkakao-cli` |
 
 ## Requirements
 
@@ -256,8 +303,12 @@ Read-only operations are always available:
 
 ```bash
 brew tap JungHoonGhae/openkakao
+brew trust --formula junghoonghae/openkakao/openkakao-cli   # Homebrew 7+
 brew install openkakao-cli
+openkakao-cli init
 ```
+
+If installing or upgrading is refused because the tap is untrusted, run the `brew trust` line; `doctor` shows the same fix.
 
 ### From source
 
@@ -289,8 +340,11 @@ openkakao-cli profile-hints --app-state --app-state-diff /tmp/profile-before.jso
 ## Claude Code Skill
 
 ```bash
-npx skills add JungHoonGhae/skills@openkakao-cli
+openkakao-cli init --skill claude   # or codex / all
+# manual install: npx skills add JungHoonGhae/skills@openkakao-cli
 ```
+
+`init` uses `npx skills add` when `npx` is available and otherwise downloads `SKILL.md` into `~/.claude/skills/openkakao-cli/` (or `~/.codex/skills/openkakao-cli/`). An installed skill is left as is and its location is shown.
 
 ## Development
 

@@ -50,3 +50,24 @@
 
 # Allow http:// webhook URLs to non-loopback hosts (default: false)
 # allow_insecure_webhooks = false
+
+# Seconds one macOS device-owner authentication (Touch ID / password) stays
+# valid for later local-send*, local-reply, local-edit and safe-send approve
+# runs, sudo-style (default 0 = ask every time; max 900). The approval time is a
+# file your account can write, so within the window any local process (a shell,
+# an agent) can send to allowlisted chats or extend the window. Enable it only
+# on a Mac where every local process is yours.
+# device_owner_auth_grace_secs = 0
+
+[ax]
+# Login-free AX automation (local-send*, ax-read, safe-send approve).
+# Seconds of keyboard/mouse idle time required before KakaoTalk may be raised
+# by a --fallback-keys route (default 2, 0 disables). --wait-idle overrides it.
+# wait_idle_secs = 2
+
+# Open a chat that has no open window from the chat list (context menu,
+# focus-free; marks the chat as read). --open-if-needed enables it per run.
+# open_if_needed = false
+
+# Largest file local-send-file accepts, in MiB (default 300).
+# max_file_mb = 300

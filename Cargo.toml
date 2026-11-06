@@ -41,6 +41,8 @@ tempfile = "3.18"
 thiserror = "2.0"
 time = "=0.3.36"
 toml = "0.8"
+# Already in the tree via `toml`; used by `init` to edit config without dropping comments.
+toml_edit = "0.22"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 owo-colors = "4"
