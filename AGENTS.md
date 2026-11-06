@@ -206,4 +206,5 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `delivery_uncertain` send automatically. On `chat_ambiguous` with
 `--open-if-needed`, the message numbers the same-name chat-list rows (time,
 preview, pin); show that list to the human and pass `--pick <N>` only with
-their choice.
+their choice. A send to a picked row always needs device-owner
+authentication, because the allowlist names every chat with that name.

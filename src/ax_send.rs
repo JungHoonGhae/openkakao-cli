@@ -334,6 +334,19 @@ pub(crate) fn is_allowlisted(allowed: &[String], chat: &str) -> bool {
     allowed.iter().any(|name| name == chat)
 }
 
+/// Why an AX write needs device-owner authentication, or `None` when the
+/// allowlist already stands for the human's approval. A `--pick` among
+/// same-name chats always needs it: the name-based allowlist covers every
+/// chat with that name, not the one picked.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn auth_reason(allowlisted: bool, picked_row: Option<&str>) -> Option<String> {
+    match (picked_row, allowlisted) {
+        (Some(row), _) => Some(format!("picked among same-name chats: {row}")),
+        (None, false) => Some("which is NOT in allowed_send_chats".to_string()),
+        (None, true) => None,
+    }
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn needs_device_owner_auth(chat: &str) -> bool {
     !ALLOWED_SEND_CHATS
@@ -1264,6 +1277,16 @@ mod policy_tests {
         assert!(!is_allowlisted(&[], "허용된 방"));
         // No allowlist loaded: every target authenticates.
         assert!(needs_device_owner_auth("허용된 방"));
+    }
+
+    #[test]
+    fn a_pick_among_duplicates_always_authenticates() {
+        assert_eq!(auth_reason(true, None), None);
+        assert!(auth_reason(false, None).unwrap().contains("NOT in"));
+        // Allowlisted by name, yet the name covers several chats.
+        assert!(auth_reason(true, Some("오후 5:30 · 📌 pinned"))
+            .unwrap()
+            .contains("📌 pinned"));
     }
 
     #[test]
@@ -2814,13 +2837,15 @@ function run(argv) {
                 let same_name =
                     |n: usize| super::picked_row(&row_names, chat_display_name, Some(n));
                 if let Some(index) = super::policy().pick.and_then(same_name) {
+                    let summary = row_summary(&rows[index].0);
                     // Safety-relevant, so always shown, not only under debug.
                     eprintln!(
-                        "--pick {}: opening '{}' ({})",
+                        "--pick {}: opening '{}' ({summary}); the allowlist names every chat \
+                         called this, so a send needs device-owner authentication",
                         super::policy().pick.unwrap_or_default(),
                         crate::util::escape_terminal_text(chat_display_name),
-                        row_summary(&rows[index].0)
                     );
+                    let _ = PICKED_DUPLICATE.set(summary);
                     rows[index].0.clone()
                 } else {
                     let candidates: Vec<String> = (1..=count)
@@ -3579,21 +3604,29 @@ end run
     /// target needs macOS device-owner authentication, and a declined prompt
     /// is `chat_not_allowed` (nothing was sent).
     fn require_send_approval(chat_display_name: &str, action: &str) -> Result<()> {
-        if !super::needs_device_owner_auth(chat_display_name) {
+        let picked = PICKED_DUPLICATE.get().map(String::as_str);
+        let allowlisted = !super::needs_device_owner_auth(chat_display_name);
+        let Some(reason) = super::auth_reason(allowlisted, picked) else {
             return Ok(());
-        }
+        };
         let target =
             crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
         openkakao_cli::human_auth::require_device_owner_auth(&format!(
-            "Approve one KakaoTalk {action} ‘{target}’, which is NOT in allowed_send_chats, after reviewing the terminal preview"
+            "Approve one KakaoTalk {action} ‘{target}’ ({reason}) after reviewing the terminal preview"
         ))
         .map_err(|error| {
-            coded(
-                ErrorCode::ChatNotAllowed,
-                format!("'{chat_display_name}' is not in allowed_send_chats and {error:#}"),
-            )
+            let code = if picked.is_some() {
+                ErrorCode::ChatAmbiguous
+            } else {
+                ErrorCode::ChatNotAllowed
+            };
+            coded(code, format!("'{chat_display_name}' ({reason}): {error:#}"))
         })
     }
+
+    /// Set by `open_chat` when `--pick` chose among same-name chats (one
+    /// command per process), so the send asks for device-owner authentication.
+    static PICKED_DUPLICATE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     struct ChatWindowElements {
         input_field: AXUIElement,
