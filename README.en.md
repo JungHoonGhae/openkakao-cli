@@ -23,7 +23,7 @@
 [한국어](README.md) | **English**
 
 > [!TIP]
-> **No login, 0.4 s per send, none of the known account-sanction triggers.** `local-send`/`ax-read` drive the **official KakaoTalk app** you are already signed in to, through the macOS Accessibility API. There is no server login, no LOCO protocol traffic and no database decryption, so the paths with reported sanctions (unregistered-device logins, unofficial-client traffic) are never used. See [Quick Start](#quick-start).
+> **No login, 0.4 s per send, just the official app.** `local-send`/`ax-read` drive the **official KakaoTalk app** you are already signed in to, through the macOS Accessibility API. There is no server login, no LOCO protocol traffic and no database decryption, so it never does what reported account bans came from (unregistered-device logins, unofficial-client traffic). See [Quick Start](#quick-start).
 
 ### ⚡ Fast
 
@@ -200,7 +200,7 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/skills@openka
 ## Highlights
 
 - **Fast**: 0.4 s per verified send, 0.2 s per read, about 100× faster than v1.9
-- **None of the known sanction triggers**: no server login or LOCO traffic, only the official app is driven
+- **Stays off the paths behind reported bans**: no server login or LOCO traffic, only the official app is driven
 - **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID; same-name chats are never guessed (`--pick`)
 - **Remote recovery**: `ax-login` (keychain), and `disposition` in every `--json` error (whether a retry could send twice)
 - Send and read real messages **without logging in**, via `local-send`/`ax-read` (drives the KakaoTalk UI directly through the macOS Accessibility API, no server contact)
