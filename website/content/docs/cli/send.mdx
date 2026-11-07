@@ -36,7 +36,7 @@ If you use `-y`, you must also allow unattended send behavior:
 
 Unattended sends are rate-limited by `safety.min_unattended_send_interval_secs` so a bad wrapper cannot burst messages immediately.
 
-Messages are prefixed with `🤖 [Sent via openkakao]` by default. Use the global `--no-prefix` flag to disable:
+Messages end with the signature line `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` by default (`[send] signature` changes it). Use the global `--no-prefix` flag to drop it:
 
 ```bash
 openkakao-cli --unattended --allow-non-interactive-send --no-prefix send <chat_id> "raw message" -y
@@ -177,7 +177,7 @@ All write commands support `--dry-run` to preview the action without making any 
 
 ```bash
 openkakao-cli send 123 "hello" --dry-run
-# [dry-run] Would send to chat 123: "🤖 [Sent via openkakao] hello"
+# [dry-run] Would send to chat 123: "hello\u{a}\u{a}⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ"
 
 openkakao-cli delete 123 456 --dry-run --json
 # {"dry_run": true, "action": "delete", "chat_id": 123, "log_id": 456}

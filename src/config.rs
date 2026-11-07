@@ -48,7 +48,10 @@ pub struct ModeConfig {
 pub struct SendConfig {
     #[serde(default)]
     pub allow_non_interactive: bool,
+    /// `false` drops the signature (kept from when it was a prefix).
     pub default_prefix: Option<bool>,
+    /// The line appended under outgoing messages; `""` drops it.
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -102,6 +105,11 @@ pub struct SafetyConfig {
     /// Enable it only on a Mac where every local process is yours.
     #[serde(default)]
     pub device_owner_auth_grace_secs: u64,
+    /// Lets `--dangerously-skip-allowlist` act without device-owner
+    /// authentication. Off by default, so an agent cannot reach a chat
+    /// outside the allowlist with a flag alone; only the human sets it.
+    #[serde(default)]
+    pub allow_skip_allowlist: bool,
 }
 
 impl Default for SafetyConfig {
@@ -115,6 +123,7 @@ impl Default for SafetyConfig {
             allow_insecure_webhooks: false,
             allow_loco_write: false,
             allow_ax_send: false,
+            allow_skip_allowlist: false,
             allowed_send_chats: Vec::new(),
             device_owner_auth_grace_secs: 0,
         }

@@ -14,10 +14,10 @@ openkakao-cli send <chat_id> "Hello!" -y
 ```
 
 > [!NOTE]
-> Messages are automatically prefixed with `🤖 [Sent via openkakao]` for traceability. Disable with `--no-prefix`.
+> Messages end with the signature line `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` for traceability. Change it with `[send] signature`, drop it with `--no-prefix`.
 
 ```bash
-# Without prefix
+# Without the signature
 openkakao-cli --no-prefix send <chat_id> "Hello!" -y
 ```
 

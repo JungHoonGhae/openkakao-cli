@@ -42,6 +42,124 @@ pub(crate) enum AxDeliveryOutcome {
     Uncertain { reason: String },
 }
 
+/// One message bubble scraped from a chat window's AX message list.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AxMessage {
+    /// The time label's date (`AXHelp`, e.g. "2026. 6. 17.") and clock
+    /// ("오전 8:49"), whichever the row shows.
+    pub time: Option<String>,
+    /// Who sent an incoming message, as KakaoTalk names them in this chat.
+    pub sender: Option<String>,
+    pub text: String,
+    pub outgoing: bool,
+}
+
+/// What `ax-read` sees of a chat: its member count (a group chat's
+/// `대화상대 N명` button; a 1:1 chat has none) and its newest messages.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Default)]
+pub struct ChatView {
+    pub members: Option<u32>,
+    pub messages: Vec<AxMessage>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn member_count(button_title: &str) -> Option<u32> {
+    button_title
+        .trim()
+        .strip_prefix("대화상대")?
+        .trim()
+        .strip_suffix('명')?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// KakaoTalk names the sender only on the first bubble of a run, so the
+/// rest of the run inherits it. An incoming run that started above the
+/// observed rows stays unnamed.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn carry_senders(messages: &mut [AxMessage]) {
+    let mut current: Option<String> = None;
+    for message in messages {
+        if message.outgoing {
+            current = None;
+        } else if message.sender.is_some() {
+            current.clone_from(&message.sender);
+        } else {
+            message.sender.clone_from(&current);
+        }
+    }
+}
+
+/// Chat names that differ from `target` only in spacing or letter case: a
+/// `chat_not_found` hint, never a match.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn same_but_spacing(name: &str, target: &str) -> bool {
+    let fold = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    name != target && fold(name) == fold(target)
+}
+
+/// The terminal card printed before KakaoTalk is changed, so the person can
+/// tell which chat this is: members, recent senders, when it was last
+/// active, and, with `lines`, its newest messages.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn chat_card(name: &str, view: &ChatView, lines: usize) -> String {
+    use crate::util::{escape_terminal_text as esc, truncate};
+    let mut facts = vec![format!("chat '{}'", esc(name))];
+    if let Some(members) = view.members {
+        facts.push(format!("{members} members"));
+    }
+    if let Some(time) = view.messages.iter().rev().find_map(|m| m.time.as_deref()) {
+        facts.push(format!("last message {}", esc(time)));
+    }
+    let mut senders: Vec<&str> = Vec::new();
+    for sender in view
+        .messages
+        .iter()
+        .rev()
+        .filter_map(|m| m.sender.as_deref())
+    {
+        if !senders.contains(&sender) && senders.len() < 5 {
+            senders.push(sender);
+        }
+    }
+    if !senders.is_empty() {
+        facts.push(format!("recent senders: {}", esc(&senders.join(", "))));
+    }
+    let mut card = facts.join(" · ");
+    let start = view.messages.len().saturating_sub(lines);
+    for message in &view.messages[start..] {
+        let who = if message.outgoing {
+            "me"
+        } else {
+            message.sender.as_deref().unwrap_or("?")
+        };
+        let time = message
+            .time
+            .as_deref()
+            .map(|t| format!("[{}] ", esc(t)))
+            .unwrap_or_default();
+        let text = message
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        card.push_str(&format!(
+            "\n  {time}{}: {}",
+            esc(who),
+            esc(&truncate(&text, 60))
+        ));
+    }
+    card
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeliveryObservation {
@@ -103,14 +221,33 @@ pub(crate) fn picked_row(
     matches.nth(pick?.checked_sub(1)?)
 }
 
+/// KakaoTalk folds a long message behind 전체보기: the bubble's AX text is
+/// the first 500 UTF-16 units and `…` (26.8, measured 2026-11-07). The floor
+/// keeps a short bubble that happens to end in `…` from matching.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const FOLDED_BUBBLE_MIN_UTF16: usize = 400;
+
+/// Whether a bubble shows `sent`: the whole text, or KakaoTalk's folded
+/// preview of it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn bubble_shows(bubble: &str, sent: &str) -> bool {
+    bubble == sent
+        || bubble.strip_suffix('…').is_some_and(|prefix| {
+            prefix.encode_utf16().count() >= FOLDED_BUBBLE_MIN_UTF16
+                && sent.len() > prefix.len()
+                && sent.starts_with(prefix)
+        })
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn has_new_exact_outgoing_message(
     before: &[DeliveryObservation],
     after: &[DeliveryObservation],
     target: &str,
 ) -> bool {
-    let matches_target =
-        |observation: &&DeliveryObservation| observation.outgoing && observation.text == target;
+    let matches_target = |observation: &&DeliveryObservation| {
+        observation.outgoing && bubble_shows(&observation.text, target)
+    };
     let before_count = before.iter().filter(matches_target).count();
     let after_count = after.iter().filter(matches_target).count();
     after_count > before_count
@@ -139,7 +276,7 @@ pub(crate) fn is_verified_delivery(
                     .get(start..)
                     .unwrap_or_default()
                     .iter()
-                    .any(|row| row.outgoing && row.text == target)
+                    .any(|row| row.outgoing && bubble_shows(&row.text, target))
                     || has_new_exact_outgoing_message(before, after, target)
             }
             None => has_new_exact_outgoing_message(before, after, target),
@@ -317,6 +454,9 @@ pub(crate) struct AxPolicy {
     pub pick: Option<usize>,
     /// `--discard-draft`: clear (and print) a composer draft before a text send.
     pub discard_draft: bool,
+    /// `--dangerously-skip-allowlist`: a chat outside the allowlist needs no
+    /// device-owner authentication (`--pick` still does).
+    pub skip_allowlist: bool,
 }
 
 pub(crate) const DEFAULT_WAIT_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -329,6 +469,7 @@ impl Default for AxPolicy {
             fallback_keys: false,
             pick: None,
             discard_draft: false,
+            skip_allowlist: false,
         }
     }
 }
@@ -377,6 +518,10 @@ pub(crate) fn set_policy(policy: AxPolicy) {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn policy() -> AxPolicy {
     AX_POLICY.get().copied().unwrap_or_default()
+}
+
+pub(crate) fn skips_allowlist() -> bool {
+    policy().skip_allowlist
 }
 
 /// Upper bound on waiting for the user to go idle before raising KakaoTalk.
@@ -440,6 +585,22 @@ fn is_uploading_label(value: &str) -> bool {
 /// "14:32", "2:05 PM"), as opposed to a file name, size or other text.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_clock_label(value: &str) -> bool {
+    clock_of(value).is_some()
+}
+
+/// The clock of a time label. In a group chat it can carry how many members
+/// have not read the message yet on the line above: "2\n오후 4:07" (26.8,
+/// measured 2026-11-07).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn clock_of(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let (unread, clock) = value.rsplit_once('\n').unwrap_or(("", value));
+    let unread = unread.trim();
+    (unread.bytes().all(|byte| byte.is_ascii_digit()) && is_bare_clock(clock)).then(|| clock.trim())
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_bare_clock(value: &str) -> bool {
     let mut rest = value.trim();
     for marker in ["오전", "오후", "AM", "PM", "am", "pm"] {
         rest = rest
@@ -823,7 +984,7 @@ fn edit_verified(
     };
     let edited_now = after
         .iter()
-        .any(|(body, outgoing, edited)| *outgoing && *edited && body == new);
+        .any(|(body, outgoing, edited)| *outgoing && *edited && bubble_shows(body, new));
     edited_now && outgoing_with(after, old) + 1 == outgoing_with(before, old)
 }
 
@@ -1238,9 +1399,11 @@ mod policy_tests {
             "2:05 PM",
             "AM 9:00",
             " 9:41 ",
+            "2\n오후 4:07",
         ] {
             assert!(is_clock_label(label), "{label}");
         }
+        assert_eq!(clock_of("2\n오후 4:07"), Some("오후 4:07"));
         for text in [
             "openkakao-시험.txt",
             "용량: 42.0bytes",
@@ -1249,6 +1412,7 @@ mod policy_tests {
             "1:2",
             "123:45",
             "",
+            "친구\n오후 4:07",
         ] {
             assert!(!is_clock_label(text), "{text}");
         }
@@ -1705,6 +1869,76 @@ mod match_tests {
     }
 
     #[test]
+    fn chat_card_names_members_senders_and_last_activity() {
+        assert_eq!(member_count("대화상대 7명"), Some(7));
+        assert_eq!(member_count("프로필"), None);
+        assert!(same_but_spacing("우리친구", "우리 친구"));
+        assert!(same_but_spacing("Team A", "team a"));
+        assert!(!same_but_spacing("우리친구", "우리친구"));
+        assert!(!same_but_spacing("우리친구들", "우리 친구"));
+
+        let msg = |sender: Option<&str>, outgoing, time: Option<&str>, text: &str| AxMessage {
+            time: time.map(str::to_string),
+            sender: sender.map(str::to_string),
+            text: text.to_string(),
+            outgoing,
+        };
+        let mut messages = vec![
+            msg(None, false, None, "윗 줄에서 이어짐"),
+            msg(Some("구자원"), false, None, "안녕"),
+            msg(None, false, Some("2026. 11. 7. 오전 8:35"), "생일 축하해"),
+            msg(None, true, None, "고마워"),
+            msg(
+                Some("변민지"),
+                false,
+                Some("2026. 11. 7. 오전 8:49"),
+                "🎉\n🥳",
+            ),
+        ];
+        carry_senders(&mut messages);
+        assert_eq!(messages[0].sender, None);
+        assert_eq!(messages[2].sender.as_deref(), Some("구자원"));
+        assert_eq!(messages[3].sender, None);
+
+        let view = ChatView {
+            members: Some(7),
+            messages,
+        };
+        assert_eq!(
+            chat_card("우리친구", &view, 0),
+            "chat '우리친구' · 7 members · last message 2026. 11. 7. 오전 8:49 · recent senders: 변민지, 구자원"
+        );
+        let card = chat_card("우리친구", &view, 2);
+        assert!(card.ends_with("\n  me: 고마워\n  [2026. 11. 7. 오전 8:49] 변민지: 🎉 🥳"));
+    }
+
+    #[test]
+    fn a_folded_long_bubble_shows_its_message() {
+        // KakaoTalk 26.8 shows the first 500 UTF-16 units and `…`.
+        let sent = format!("{}💡 코스: 회룡사 → 저녁", "가".repeat(498));
+        let folded = format!("{}💡…", "가".repeat(498));
+        assert!(bubble_shows(&folded, &sent));
+        assert!(bubble_shows(&sent, &sent));
+        // A different ending, a short `…` bubble, or the folded text itself.
+        assert!(!bubble_shows(
+            &folded,
+            &format!("{}🎵 다른 글", "가".repeat(498))
+        ));
+        assert!(!bubble_shows("음…", "음…ㅋㅋ"));
+        assert!(!bubble_shows(
+            &folded,
+            &folded[..folded.len() - '…'.len_utf8()]
+        ));
+
+        let before = vec![];
+        let after = vec![DeliveryObservation {
+            text: folded,
+            outgoing: true,
+        }];
+        assert!(is_verified_delivery(&before, &after, None, &sent, Some("")));
+    }
+
+    #[test]
     fn delivery_verification_also_requires_the_composer_to_clear() {
         let before = vec![DeliveryObservation {
             text: "older".to_string(),
@@ -1933,6 +2167,7 @@ mod imp {
 
     // Declared on the cross-platform module (see there) so their bounds and
     // exact-match text stay testable wherever the crate's CI runs.
+    use super::{AxMessage, ChatView};
     use super::{FILE_PICKER_READY_TIMEOUT, OPEN_CHAT_TIMEOUT, PHOTO_BUBBLE_PLACEHOLDER};
     use crate::error::{coded, error_code, ErrorCode};
 
@@ -3185,6 +3420,74 @@ function run(argv) {
             .find(|value| !value.trim().is_empty())
     }
 
+    /// `chat_not_found`'s hint: chats whose names differ only in spacing or
+    /// case, with their last message, so the person can tell which one they
+    /// meant. KakaoTalk's search keeps spaces, so a name with spaces is also
+    /// searched without them. Nothing is opened: the name must still match.
+    fn near_name_hint(
+        main_window: &AXUIElement,
+        snap: &AxNode,
+        name: &str,
+        rows: ChatRows,
+        search: Option<ChatSearch>,
+    ) -> String {
+        let near = |rows: &ChatRows| -> Vec<String> {
+            rows.iter()
+                .filter_map(|(row, row_name)| {
+                    let row_name = row_name.as_deref()?;
+                    super::same_but_spacing(row_name, name).then(|| {
+                        format!(
+                            "\n  '{}' ({})",
+                            crate::util::escape_terminal_text(row_name),
+                            row_summary(row)
+                        )
+                    })
+                })
+                .collect()
+        };
+        let mut found = near(&rows);
+        let compact: String = name.split_whitespace().collect();
+        if found.is_empty() && compact != name {
+            drop(search);
+            // Searching again before the full list is back reads its rows
+            // as the result (measured: 31 stale rows instead of 1).
+            let restored = restored_chat_list(main_window);
+            let base = restored.as_ref().unwrap_or(snap);
+            if let Some((_search, rows)) = filter_chat_list(main_window, base, &compact) {
+                found = near(&rows);
+            }
+        }
+        if found.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nsimilar chat names (not opened; re-run with the exact name):{}",
+                found.concat()
+            )
+        }
+    }
+
+    /// The main window once a closed search has restored the full chat list:
+    /// no search field and the same row count twice in a row.
+    fn restored_chat_list(main_window: &AXUIElement) -> Option<AxNode> {
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let mut last = None;
+        while Instant::now() < deadline {
+            let snap = snapshot_shallow(main_window).ok()?;
+            if snap.find_first("AXTextField").is_none() {
+                let count = snap
+                    .find_first("AXTable")
+                    .and_then(|table| table_row_count(&table.element));
+                if count.is_some() && last == count {
+                    return Some(snap);
+                }
+                last = count;
+            }
+            sleep(Duration::from_millis(100));
+        }
+        None
+    }
+
     struct OpenChat {
         window: AXUIElement,
         /// The window was already open: nothing was opened or raised.
@@ -3255,13 +3558,17 @@ function run(argv) {
                             "chat '{chat_display_name}' is not in KakaoTalk's chat list, which is filtered by the search term '{term}'"
                         ),
                     ),
-                    None if search.is_some() => coded(
-                        ErrorCode::ChatNotFound,
-                        format!(
-                            "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}' ({} rows matched the term)",
-                            rows.len()
-                        ),
-                    ),
+                    None if search.is_some() => {
+                        let matched = rows.len();
+                        let hint =
+                            near_name_hint(&main_window, &snap, chat_display_name, rows, search);
+                        coded(
+                            ErrorCode::ChatNotFound,
+                            format!(
+                                "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}' ({matched} rows matched the term){hint}"
+                            ),
+                        )
+                    }
                     None => coded(
                         ErrorCode::ChatNotFound,
                         format!(
@@ -4044,10 +4351,26 @@ end run
     /// is `chat_not_allowed` (nothing was sent).
     /// `Ok(true)` when the macOS prompt ran (time passed: re-read any
     /// baseline), `Ok(false)` when the allowlist was the approval.
-    fn require_send_approval(chat_display_name: &str, action: &str) -> Result<bool> {
+    /// Every action first prints which chat this is (members, recent senders,
+    /// last activity); a chat that needs the prompt also shows its newest
+    /// messages, so the person approving recognises it.
+    fn require_send_approval(
+        window: &AXUIElement,
+        chat_display_name: &str,
+        action: &str,
+    ) -> Result<bool> {
         let picked = PICKED_DUPLICATE.get().map(String::as_str);
         let allowlisted = !super::needs_device_owner_auth(chat_display_name);
-        let Some(reason) = super::auth_reason(allowlisted, picked) else {
+        let reason = super::auth_reason(allowlisted || super::skips_allowlist(), picked);
+        let lines = if allowlisted && picked.is_none() {
+            0
+        } else {
+            3
+        };
+        if let Ok(view) = chat_view(window, 8) {
+            eprintln!("{}", super::chat_card(chat_display_name, &view, lines));
+        }
+        let Some(reason) = reason else {
             return Ok(false);
         };
         let target =
@@ -4130,16 +4453,6 @@ end run
         }
     }
 
-    /// One message bubble scraped from a chat window's AX message list.
-    #[derive(Debug, Clone)]
-    pub struct AxMessage {
-        /// The time label's `AXHelp` text (full date, e.g. "2026. 6. 17.") if
-        /// present, else its plain displayed value (e.g. "14:32").
-        pub time: Option<String>,
-        pub text: String,
-        pub outgoing: bool,
-    }
-
     fn table_center_x(table: &AXUIElement) -> Option<f64> {
         attr_as_frame(table).map(|(origin, size)| origin.x + size.width / 2.0)
     }
@@ -4202,10 +4515,12 @@ end run
             found += usize::from(message_from_row(row, center).is_some());
             found >= count
         })?;
-        Ok(rows
+        let mut messages: Vec<AxMessage> = rows
             .iter()
             .filter_map(|row| message_from_row(row, center))
-            .collect())
+            .collect();
+        super::carry_senders(&mut messages);
+        Ok(messages)
     }
 
     /// The row's upload-progress label (an outgoing file still uploading).
@@ -4259,17 +4574,66 @@ end run
         let outgoing = row_is_outgoing(row, bubble, table_center_x);
         // Same-minute messages show the clock only on the last one; a file
         // row's other texts (name, validity, size) are never a time.
+        // The clock label's AXHelp is its date (26.8: "2026. 11. 7.").
+        let stamp = |t: &AxNode| match (t.help.as_deref(), t.value.as_deref()) {
+            (Some(date), Some(label)) if super::is_clock_label(label) => {
+                super::clock_of(label).map(|clock| format!("{date} {clock}"))
+            }
+            (None, Some(label)) if super::is_clock_label(label) => {
+                super::clock_of(label).map(str::to_string)
+            }
+            _ => t.help.clone().or_else(|| t.value.clone()),
+        };
         let time = time_label(row)
             .or_else(|| {
                 (bubble.role == "AXTextArea")
                     .then(|| row.find_first("AXStaticText"))
                     .flatten()
             })
-            .and_then(|t| t.help.clone().or_else(|| t.value.clone()));
+            .and_then(stamp);
         Some(AxMessage {
             time,
+            sender: (!outgoing).then(|| sender_label(row)).flatten(),
             text,
             outgoing,
+        })
+    }
+
+    /// The sender's name on the first bubble of an incoming run: the row
+    /// shows a 프로필 button and the name as its first non-clock text
+    /// (26.8, measured 2026-11-07).
+    fn sender_label(row: &AxNode) -> Option<String> {
+        let mut buttons = Vec::new();
+        row.find_all("AXButton", &mut buttons);
+        if !buttons
+            .iter()
+            .any(|button| button.description.as_deref() == Some("프로필"))
+        {
+            return None;
+        }
+        let mut texts = Vec::new();
+        row.find_all("AXStaticText", &mut texts);
+        texts
+            .into_iter()
+            .filter_map(|node| node.value.as_deref().map(str::trim))
+            .find(|value| !value.is_empty() && !super::is_clock_label(value) && *value != "수정됨")
+            .map(str::to_string)
+    }
+
+    /// A group chat's member count from its `대화상대 N명` button.
+    fn chat_members(window: &AXUIElement) -> Option<u32> {
+        let snap = snapshot_shallow(window).ok()?;
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        buttons
+            .iter()
+            .find_map(|button| button.title.as_deref().and_then(super::member_count))
+    }
+
+    fn chat_view(window: &AXUIElement, count: usize) -> Result<ChatView> {
+        Ok(ChatView {
+            members: chat_members(window),
+            messages: read_recent_messages(window, count)?,
         })
     }
 
@@ -5109,7 +5473,7 @@ end run
             // Authentication may take a while and needs nothing from
             // KakaoTalk; give the user's app back first.
             focus.restore();
-            require_send_approval(chat_display_name, &format!("{noun} to"))?;
+            require_send_approval(&window, chat_display_name, &format!("{noun} to"))?;
             // Revalidate the exact recipient, the previewed name and the very
             // same one-file send button immediately before the commit.
             if find_chat_window(&app, chat_display_name)?.is_none() {
@@ -5360,7 +5724,7 @@ end run
     /// key derivation is stale for the installed KakaoTalk build. Only
     /// messages already rendered on screen are returned — older history
     /// requires scrolling up in KakaoTalk first.
-    pub fn read_via_ax(chat_display_name: &str, count: usize) -> Result<Vec<AxMessage>> {
+    pub fn read_via_ax(chat_display_name: &str, count: usize) -> Result<ChatView> {
         let started = Instant::now();
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
@@ -5372,12 +5736,12 @@ end run
 
         let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
         loop {
-            let messages = read_recent_messages(&chat.window, count)?;
+            let view = chat_view(&chat.window, count)?;
             // A window that was already open is read once; a just-opened one
             // may need a moment to render its rows.
-            if chat.was_open || !messages.is_empty() {
+            if chat.was_open || !view.messages.is_empty() {
                 trace(started, "messages read");
-                return Ok(messages);
+                return Ok(view);
             }
             if Instant::now() >= deadline {
                 anyhow::bail!("chat window did not open (or has no visible messages) in time");
@@ -5463,7 +5827,7 @@ end run
         // composer, and pre-send bubble baseline are all known; authentication
         // happens immediately before the composer is changed.
         focus.watch();
-        require_send_approval(chat_display_name, "message to")?;
+        require_send_approval(&window, chat_display_name, "message to")?;
         if let Some(draft) = discard {
             // Printed before it is cleared, so the text is never lost.
             eprintln!(
@@ -5969,7 +6333,7 @@ end run
         // Only a real action may dismiss a leftover alert.
         clear_leftover_alerts(&window)?;
         focus.watch();
-        require_send_approval(chat_display_name, "reply in")?;
+        require_send_approval(&window, chat_display_name, "reply in")?;
         let baseline = delivery_observations(&elements.message_table)?;
         focus.watch();
         press_bubble_menu_item(&app, &bubble.text_area, "답장")?;
@@ -6053,7 +6417,7 @@ end run
         // Only a real action may dismiss a leftover alert.
         clear_leftover_alerts(&window)?;
         focus.watch();
-        let prompted = require_send_approval(chat_display_name, "message edit in")?;
+        let prompted = require_send_approval(&window, chat_display_name, "message edit in")?;
         let rows = |bubbles: &[Bubble]| -> BubbleRows {
             bubbles
                 .iter()
@@ -6228,7 +6592,7 @@ end run
         // Only a real action may dismiss a leftover alert.
         clear_leftover_alerts(&window)?;
         focus.watch();
-        let prompted = require_send_approval(chat_display_name, "message delete in")?;
+        let prompted = require_send_approval(&window, chat_display_name, "message delete in")?;
         let pairs = |rows: &[(String, bool, bool)]| -> Vec<(String, bool)> {
             rows.iter()
                 .map(|(text, outgoing, _)| (text.clone(), *outgoing))
@@ -6446,6 +6810,8 @@ end run
     pub struct ChatListRow {
         pub name: String,
         pub unread: i32,
+        /// A group chat's member count, shown right of its name.
+        pub members: Option<u32>,
         pub preview: String,
         // Scraped for completeness but not currently consumed by any caller
         // (ax-watch's event doesn't need the row's own last-message
@@ -6482,18 +6848,27 @@ end run
         row.find_all("AXStaticText", &mut static_texts);
         // The first static text is the chat name (same convention as
         // open_chat).
-        let name = static_texts.first().and_then(|t| t.value.clone())?;
-        // Among the remaining static texts, the unread badge is the one
-        // whose whole value parses as an integer (e.g. "5"); a
-        // non-numeric one (e.g. "어제", "오후 3:14") is the timestamp.
+        let name_node = static_texts.first()?;
+        let name = name_node.value.clone()?;
+        // Among the remaining static texts, a whole integer is the member
+        // count when it sits on the name's line and the unread badge when it
+        // sits below it (26.8: same y vs about 20 px lower, measured
+        // 2026-11-07); a non-numeric one ("어제", "오후 3:14") is the time.
+        let on_name_line = |t: &AxNode| match (t.position_y, name_node.position_y) {
+            (Some(y), Some(name_y)) => (y - name_y).abs() <= 4.0,
+            _ => false,
+        };
         let mut unread = 0;
+        let mut members = None;
         let mut timestamp = String::new();
         for t in static_texts.iter().skip(1) {
             let Some(v) = t.value.as_deref() else {
                 continue;
             };
             if let Ok(n) = v.trim().parse::<i32>() {
-                if unread == 0 {
+                if on_name_line(t) {
+                    members = members.or(u32::try_from(n).ok());
+                } else if unread == 0 {
                     unread = n;
                 }
             } else if timestamp.is_empty() {
@@ -6508,6 +6883,7 @@ end run
         Some(ChatListRow {
             name,
             unread,
+            members,
             preview,
             timestamp,
         })
@@ -6523,6 +6899,9 @@ end run
         });
         let facts = chat_row(&node).map_or_else(Vec::new, |row| {
             let mut facts = vec![row.timestamp, crate::util::truncate(&row.preview, 40)];
+            if let Some(members) = row.members {
+                facts.push(format!("{members} members"));
+            }
             if row.unread > 0 {
                 facts.push(format!("{} unread", row.unread));
             }
@@ -7178,17 +7557,6 @@ pub use imp::{
 mod stub {
     use anyhow::{anyhow, Result};
 
-    /// Mirrors `imp::AxMessage`'s shape so callers don't need cfg-gating.
-    /// Never actually constructed here — `read_via_ax` below always errors
-    /// on this platform — so its fields would otherwise trip `dead_code`.
-    #[allow(dead_code)]
-    #[derive(Debug, Clone)]
-    pub struct AxMessage {
-        pub time: Option<String>,
-        pub text: String,
-        pub outgoing: bool,
-    }
-
     pub fn send_via_ax_classified(
         _chat_display_name: &str,
         _message: &str,
@@ -7270,7 +7638,7 @@ mod stub {
         }]
     }
 
-    pub fn read_via_ax(_chat_display_name: &str, _count: usize) -> Result<Vec<AxMessage>> {
+    pub fn read_via_ax(_chat_display_name: &str, _count: usize) -> Result<super::ChatView> {
         Err(anyhow!(
             "ax-read (AX automation) is only supported on macOS"
         ))
@@ -7283,6 +7651,7 @@ mod stub {
     pub struct ChatListRow {
         pub name: String,
         pub unread: i32,
+        pub members: Option<u32>,
         pub preview: String,
         pub timestamp: String,
     }

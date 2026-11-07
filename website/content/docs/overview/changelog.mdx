@@ -11,6 +11,17 @@ description: Release notes for OpenKakao.
 
 This page highlights major releases. Every release, including v1.5 through v1.10, is in [`CHANGELOG.md`](https://github.com/JungHoonGhae/openkakao-cli/blob/main/CHANGELOG.md).
 
+## v1.13.0
+
+**Know which chat you are about to write to.**
+
+- Every send, reply, edit and delete first prints the chat's member count, recent senders and last activity, and for a chat outside the allowlist its three newest messages.
+- `chat_not_found` names chats that differ only in spacing (`우리 친구` → `우리친구`) with their last message.
+- Long messages that KakaoTalk folds behind 전체보기 are verified instead of `delivery_uncertain`.
+- `ax-read --json` gives `members`, `sender` and `outgoing`; times include the clock.
+- Messages end with `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` instead of starting with `🤖 [Sent via openkakao]` (`[send] signature`, `--no-prefix`).
+- New `--dangerously-skip-allowlist` skips device-owner authentication for chats outside the allowlist, after the person at the Mac sets `[safety] allow_skip_allowlist = true`.
+
 ## v1.12.0
 
 **Photos and files are verified once uploaded, and messages can be deleted.**

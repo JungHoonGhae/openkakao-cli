@@ -62,7 +62,8 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Do not prepend '🤖 [Sent via openkakao]' prefix to outgoing messages"
+        alias = "no-signature",
+        help = "Do not append the '⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ' line ([send] signature) to outgoing messages"
     )]
     no_prefix: bool,
     #[arg(
@@ -103,6 +104,12 @@ struct Cli {
         help = "AX: use the older raise + keys routes (Return, clipboard ⌘V, row double-click) for builds without the AX buttons"
     )]
     fallback_keys: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "AX: send, reply, edit or delete in a chat outside [safety] allowed_send_chats without device-owner authentication; needs [safety] allow_skip_allowlist = true (exact names only; same-name chats still refuse)"
+    )]
+    dangerously_skip_allowlist: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -865,7 +872,16 @@ fn require_ax_send(config: &config::OpenKakaoConfig) -> Result<()> {
 /// target is flagged here and must pass device-owner authentication in the
 /// AX transport (`ax_send::require_send_approval`).
 fn warn_if_not_allowlisted(config: &config::OpenKakaoConfig, chat_name: &str) {
-    if !ax_send::is_allowlisted(&config.safety.allowed_send_chats, chat_name) {
+    if ax_send::is_allowlisted(&config.safety.allowed_send_chats, chat_name) {
+        return;
+    }
+    if ax_send::skips_allowlist() {
+        eprintln!(
+            "⚠ \"{}\" is NOT in [safety] allowed_send_chats: --dangerously-skip-allowlist acts \
+             without device-owner authentication.",
+            util::escape_terminal_text(chat_name)
+        );
+    } else {
         eprintln!(
             "⚠ \"{}\" is NOT in [safety] allowed_send_chats: macOS device-owner authentication \
              (Touch ID or login password) is required. Add the exact name there to send without it.",
@@ -927,6 +943,17 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let config = load_config()?;
+    if cli.dangerously_skip_allowlist && !config.safety.allow_skip_allowlist {
+        return Err(error::coded(
+            error::ErrorCode::ChatNotAllowed,
+            "--dangerously-skip-allowlist is disabled: nothing was done.\n\
+             It acts in chats outside allowed_send_chats without device-owner\n\
+             authentication, so only the person at this Mac turns it on, in\n\
+             ~/.config/openkakao/config.toml:\n\n\
+             [safety]\n\
+             allow_skip_allowlist = true",
+        ));
+    }
     openkakao_cli::human_auth::set_device_owner_auth_grace(
         config.safety.device_owner_auth_grace_secs,
     );
@@ -940,6 +967,7 @@ fn run(cli: Cli) -> Result<()> {
         fallback_keys: cli.fallback_keys,
         pick: cli.pick,
         discard_draft: cli.discard_draft,
+        skip_allowlist: cli.dangerously_skip_allowlist,
     });
     ax_send::set_allowed_send_chats(config.safety.allowed_send_chats.clone());
     set_auth_policy(AuthPolicy::from_config(&config.auth));
@@ -956,11 +984,14 @@ fn run(cli: Cli) -> Result<()> {
     let min_webhook_interval_secs = config.safety.min_webhook_interval_secs.unwrap_or(2);
     let hook_timeout_secs = config.safety.hook_timeout_secs.unwrap_or(20);
     let webhook_timeout_secs = config.safety.webhook_timeout_secs.unwrap_or(10);
-    let no_prefix = if cli.no_prefix {
-        true
-    } else {
-        matches!(config.send.default_prefix, Some(false))
-    };
+    let signature = (!cli.no_prefix && config.send.default_prefix != Some(false)).then(|| {
+        config
+            .send
+            .signature
+            .clone()
+            .unwrap_or_else(|| util::DEFAULT_SIGNATURE.to_string())
+    });
+    let signature = signature.as_deref();
 
     // Respect NO_COLOR env var (https://no-color.org/) and --no-color flag
     if cli.no_color || std::env::var("NO_COLOR").is_ok() || json {
@@ -1091,7 +1122,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, no_prefix);
+            let msg = format_outgoing_message(&message, signature);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would send to chat {}: \"{}\"",
@@ -1130,7 +1161,7 @@ fn run(cli: Cli) -> Result<()> {
             let memo_id = reader
                 .find_memo_chat_id()?
                 .context("Could not find memo chat (나와의 채팅) in local database")?;
-            let msg = format_outgoing_message(&message, no_prefix);
+            let msg = format_outgoing_message(&message, signature);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would send to memo chat {}: \"{}\"",
@@ -1287,7 +1318,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, no_prefix);
+            let msg = format_outgoing_message(&message, signature);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would edit message {} in chat {}: \"{}\"",
@@ -1575,7 +1606,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, no_prefix);
+            let msg = format_outgoing_message(&message, signature);
             if !dry_run {
                 require_ax_send(&config)?;
                 warn_if_not_allowlisted(&config, &chat_name);
@@ -1629,7 +1660,7 @@ fn run(cli: Cli) -> Result<()> {
                 commands::local_actions::BubbleActionOptions {
                     chat_name,
                     target,
-                    text: format_outgoing_message(&message, no_prefix),
+                    text: format_outgoing_message(&message, signature),
                     skip_confirm: yes,
                     dry_run,
                     json,
@@ -1703,7 +1734,7 @@ fn run(cli: Cli) -> Result<()> {
                 reply_log_id,
                 idempotency_key,
             } => {
-                let message = format_outgoing_message(&message, no_prefix);
+                let message = format_outgoing_message(&message, signature);
                 commands::safe_send::cmd_propose(commands::safe_send::ProposeOptions {
                     chat_name,
                     message,
@@ -1841,16 +1872,21 @@ mod tests {
     use crate::util::{require_permission, validate_outbound_message};
 
     #[test]
-    fn outgoing_messages_include_prefix_by_default() {
+    fn outgoing_messages_end_with_the_signature_line() {
         assert_eq!(
-            format_outgoing_message("hello", false),
-            "🤖 [Sent via openkakao] hello"
+            format_outgoing_message("hello", Some(util::DEFAULT_SIGNATURE)),
+            "hello\n\n⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ"
+        );
+        assert_eq!(
+            format_outgoing_message("hello", Some("— 정훈 비서")),
+            "hello\n\n— 정훈 비서"
         );
     }
 
     #[test]
-    fn outgoing_messages_can_disable_prefix() {
-        assert_eq!(format_outgoing_message("hello", true), "hello");
+    fn outgoing_messages_can_drop_the_signature() {
+        assert_eq!(format_outgoing_message("hello", None), "hello");
+        assert_eq!(format_outgoing_message("hello", Some(" ")), "hello");
     }
 
     #[test]

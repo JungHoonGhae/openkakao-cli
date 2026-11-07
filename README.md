@@ -201,7 +201,9 @@ openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/openkakao
 
 - **빠름**: 전송 0.4초(말풍선 확인 포함), 읽기 0.2초. v1.9 대비 약 100배 이상
 - **정지 사례가 나온 방식은 쓰지 않음**: 서버 로그인도 LOCO 통신도 없이 공식 앱만 조작
-- **사람 승인 모델**: 화이트리스트 방은 바로 전송, 그 밖의 방은 ⚠ 표시와 Touch ID. 이름이 같은 방은 추측하지 않고 `--pick`
+- **사람 승인 모델**: 화이트리스트 방은 바로 전송, 그 밖의 방은 ⚠ 표시와 Touch ID(사람이 `[safety] allow_skip_allowlist = true`를 켜 두면 `--dangerously-skip-allowlist`로 생략 가능). 이름이 같은 방은 추측하지 않고 `--pick`
+- **방 확인 카드**: 보내기 전에 인원수·최근 보낸 사람·마지막 대화 시각을, 화이트리스트 밖의 방은 최근 메시지 3개까지 보여 줍니다
+- **서명**: 메시지 맨 아래에 `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`. `[send] signature`로 바꾸고 `--no-prefix`로 뺍니다
 - **원격 복구**: `ax-login`(키체인), 에이전트용 `--json` 에러의 `disposition`(재시도해도 중복 전송이 없는지)
 - `local-send`/`ax-read`로 **로그인 없이** 실제 메시지 전송·읽기 (macOS Accessibility API로 카톡 UI를 직접 조작, 서버 통신 없음)
 - macOS 카카오톡 앱에서 인증 정보 추출
@@ -305,7 +307,7 @@ openkakao-cli safe-send cancel <intent_id>
 | `chat_not_allowed` | 화이트리스트 밖의 방에서 Touch ID를 하지 않음 | 승인하거나 `init --allow-chat`으로 등록 |
 | `main_window_not_visible`, `kakaotalk_not_on_all_spaces` | 메인 창이 닫혔거나 다른 Space에 있음 | `openkakao-cli init --all-spaces`(Dock → 옵션 → 지정 → 모든 데스크탑과 같은 설정을 기록하고 Dock을 한 번 재시작) |
 | `chat_window_not_open` | 같은 제목의 채팅 창이 열려 있지 않음 | 채팅 창을 한 번 열어 두거나 `--open-if-needed` |
-| `chat_not_found`, `chat_list_filtered` | 채팅 목록에 로드되지 않았거나 검색어로 걸러짐 | 검색창을 비우고 목록을 스크롤하거나 탭을 바꿔 다시 그리게 합니다. 목록은 메인 창이 다시 그려지기 전까지 예전 상태일 수 있습니다 |
+| `chat_not_found`, `chat_list_filtered` | 채팅 목록에 로드되지 않았거나 검색어로 걸러짐 | 띄어쓰기·대소문자만 다른 방이 있으면 마지막 메시지와 함께 알려 줍니다(열지는 않음). 검색창을 비우고 목록을 스크롤하거나 탭을 바꿔 다시 그리게 합니다. 목록은 메인 창이 다시 그려지기 전까지 예전 상태일 수 있습니다 |
 | `send_button_missing` | 이 빌드가 `전송` 버튼을 AX에 노출하지 않음 | `--fallback-keys` |
 | `menu_not_found` | 컨텍스트 메뉴를 AX에서 찾지 못함(다른 동작은 하지 않음) | 다시 시도하거나 채팅 창을 직접 엽니다. 메뉴가 떠 있으면 다른 곳을 클릭해 닫습니다. **Esc는 누르지 마세요**(카카오톡이 창을 닫습니다) |
 | `composer_busy` | 입력창에 초안이 있거나 답장·수정 중 | `doctor --chat`으로 초안 확인 후 `--discard-draft`(지우기 전 내용 출력) 또는 카카오톡에서 정리 |

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-11-07
+
+### Fixed
+- **A long message is verified even when KakaoTalk folds it.** A message over 500 UTF-16 units shows only its first 500 and `…` behind 전체보기, so the exact-text check never matched and a delivered send was `delivery_uncertain`. A folded bubble now counts when its visible part starts the sent text (at least 400 units, so a short bubble ending in `…` never does). This also applies to `local-reply` and to `local-edit`'s new text.
+- In group chats the time label can carry the unread count (`2\n오후 4:07`), which was not read as a time, so `ax-read` lost the clock. Times are now the date and clock (`2026. 11. 7. 오후 4:07`).
+- A group chat's member count, shown right of its name in the chat list, was read as its unread badge. `ax-watch` therefore missed new messages in group chats, and `--pick` candidates showed the member count as unread.
+
+### Added
+- **A chat card before every send, reply, edit and delete**: the chat's member count, recent senders and last activity on stderr, plus its three newest messages when the chat is outside `allowed_send_chats`, so the person approving recognises the chat.
+- `ax-read --json` gives `members` and each message's `sender` and `outgoing`.
+- `chat_not_found` names chats whose names differ only in spacing or case, with their last message, and opens none of them. KakaoTalk's search keeps spaces, so a name with spaces is searched again without them.
+- **`--dangerously-skip-allowlist`** acts in a chat outside `allowed_send_chats` without device-owner authentication, once the person at the Mac sets `[safety] allow_skip_allowlist = true` (off by default, so the flag alone never bypasses it). Exact names, the same-name refusal and `--pick`'s prompt stay.
+
+### Security
+- `ax-read`'s text output escapes terminal control characters in senders, times and messages.
+
+### Changed
+- **The outgoing marker is a signature line under the message**: `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` instead of `🤖 [Sent via openkakao]` before it. `[send] signature` changes the text; `--no-prefix` (alias `--no-signature`), `signature = ""` and `default_prefix = false` drop it.
+
 ## [1.12.0] - 2026-11-07
 
 ### Fixed
