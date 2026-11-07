@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A photo or file is `sent` only once KakaoTalk finished uploading it.** The bubble appears when the upload starts, and KakaoTalk 26.8 shows a photo in flight with no "업로드 중" label, so a file staged into `~/Downloads` was removed while KakaoTalk was still reading it: the upload failed ("예상하지 못한 오류가 발생했습니다.", a red ✕ on the bubble) and openkakao still reported `sent`. Now the newest outgoing attachment must show its `공유` button; a KakaoTalk alert during the upload is `delivery_uncertain` with the alert's text, and the staged copy is kept until the upload ends.
+- **Alerts KakaoTalk leaves over a chat window no longer block the next send.** A sheet with a lone 확인/OK (such as the failed-upload alerts above) is dismissed before a send, reply, edit or delete, and its text is printed to stderr. Any other dialog fails with the new `chat_dialog_open` before anything is pressed. Previously the next file send failed with "the open panel shows no 사이드바/Sidebar".
+- A send next to a failed upload's bubble is verified again. KakaoTalk keeps that bubble pinned last and inserts new messages above it, so nothing followed the baseline's newest row and a real send read as `delivery_uncertain`; the counting rule now also applies when nothing follows the anchor.
+- `menu_not_found` errors list the menu's items without the empty separators.
+
+### Added
+- **`local-delete <chat> --match <text> --for-everyone | --for-me`** deletes one bubble through KakaoTalk's own menu, focus-free: `모든 대화 상대에게서 삭제` or `나에게서만 삭제`, then only the target row ticked in KakaoTalk's selection mode, `확인`, and `삭제` on a confirmation headed by that scope. KakaoTalk shows only the deletes it allows (for everyone: your own messages within 24 hours, never in the memo chat), so an absent item fails with the new `delete_unavailable` and nothing is deleted; it never falls back to the other scope. Any failure before `삭제` leaves the selection mode. Success needs one fewer bubble with that text. Measured for `--for-me` on KakaoTalk 26.8; `--for-everyone` follows the same flow and refuses any confirmation not headed by its scope.
+- The agent skill moved into this repository (`skills/openkakao-cli/`), so it ships with each release: `npx skills add JungHoonGhae/openkakao-cli`, and `init` installs it from there. It documents agent-desktop as an optional, recovery-only dependency for dialogs and failed upload bubbles on an unattended Mac.
+
+### Performance
+- File and photo sends no longer wait 300 ms for the display unless it is asleep, and do not read the open panel's file list twice when its path popup confirms the folder (a 420-file Downloads cost 830 ms). Measured: the preview is ready in 1.8 s instead of 3.4 s.
+- `local-edit` reuses the rows it found the target in as its baseline unless a device-owner prompt let time pass (one 40-row read, about 0.3 s, less).
+
 ## [1.11.0] - 2026-11-07
 
 ### Performance

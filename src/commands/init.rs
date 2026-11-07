@@ -14,10 +14,10 @@ use toml_edit::{value, Array, DocumentMut, Item, Table};
 
 use crate::util::{confirm, escape_terminal_text};
 
-const SKILL_SOURCE: &str = "JungHoonGhae/skills@openkakao-cli";
+const SKILL_SOURCE: &str = "JungHoonGhae/openkakao-cli@openkakao-cli";
 const SKILL_NAME: &str = "openkakao-cli";
 const SKILL_URL: &str =
-    "https://raw.githubusercontent.com/JungHoonGhae/skills/main/skills/openkakao-cli/SKILL.md";
+    "https://raw.githubusercontent.com/JungHoonGhae/openkakao-cli/main/skills/openkakao-cli/SKILL.md";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SkillTarget {

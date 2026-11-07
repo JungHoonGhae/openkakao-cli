@@ -646,6 +646,34 @@ enum Commands {
         #[arg(long, help = "Show the targeted bubble without acting")]
         dry_run: bool,
     },
+    /// Delete one message bubble via AX, through KakaoTalk's own delete menu
+    #[command(
+        long_about = "Delete one message bubble via AX, without raising KakaoTalk (experimental; \
+                      measured on KakaoTalk 26.8). --match must equal the bubble's whole text (two \
+                      matches refuse). Choose --for-everyone (모든 대화 상대에게서 삭제: your own \
+                      messages, within 24 hours of sending, never in the memo chat) or --for-me \
+                      (나에게서만 삭제: this Mac only). KakaoTalk decides what it offers: a scope its \
+                      menu does not show fails with delete_unavailable, and nothing is deleted. \
+                      Success requires the bubble to be gone or replaced by KakaoTalk's notice. \
+                      --dry-run shows the target only."
+    )]
+    LocalDelete {
+        /// Exact title of the open chat window (and allowlisted display name)
+        chat_name: String,
+        /// The bubble's whole text
+        #[arg(long = "match", value_name = "TEXT")]
+        text: String,
+        /// Delete it for everyone in the chat (모든 대화 상대에게서 삭제)
+        #[arg(long, conflicts_with = "for_me", required_unless_present = "for_me")]
+        for_everyone: bool,
+        /// Delete it from this Mac only (나에게서만 삭제)
+        #[arg(long)]
+        for_me: bool,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Show the targeted bubble without acting")]
+        dry_run: bool,
+    },
     /// Send one photo via AX automation through the official KakaoTalk app
     LocalSendPhoto {
         chat_name: String,
@@ -864,6 +892,7 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalSendFile { .. }
             | Commands::LocalReply { .. }
             | Commands::LocalEdit { .. }
+            | Commands::LocalDelete { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxLogin { .. }
@@ -1626,6 +1655,25 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
                 json,
             })?
+        }
+        Commands::LocalDelete {
+            chat_name,
+            text,
+            for_everyone,
+            for_me: _,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                warn_if_not_allowlisted(&config, &chat_name);
+            }
+            let scope = if for_everyone {
+                ax_send::DeleteScope::Everyone
+            } else {
+                ax_send::DeleteScope::Me
+            };
+            commands::local_actions::cmd_local_delete(&chat_name, &text, scope, yes, dry_run, json)?
         }
         Commands::LocalSendPhoto {
             chat_name,

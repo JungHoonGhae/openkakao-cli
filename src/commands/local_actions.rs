@@ -1,4 +1,4 @@
-//! `local-reply` / `local-edit`: experimental, focus-free message actions on
+//! `local-reply` / `local-edit` / `local-delete`: experimental, focus-free message actions on
 //! an open chat window (see `ax_send::reply_via_ax` / `ax_send::edit_via_ax`).
 
 use anyhow::Result;
@@ -87,6 +87,52 @@ pub fn cmd_local_edit(opts: BubbleActionOptions) -> Result<()> {
         };
         ax_send::edit_via_ax(chat, old, text, dry_run)
     })
+}
+
+/// `local-delete`: review, then [`ax_send::delete_via_ax`].
+pub fn cmd_local_delete(
+    chat_name: &str,
+    text: &str,
+    scope: ax_send::DeleteScope,
+    skip_confirm: bool,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let target = BubbleTarget::Text(text.to_string());
+    if !dry_run {
+        eprintln!("Direct AX delete review (experimental):");
+        eprintln!("  chat:   {}", escape_terminal_text(chat_name));
+        eprintln!("  target: {}", describe(&target));
+        eprintln!("  scope:  {}", scope.menu_item());
+        if !skip_confirm {
+            eprint!("Continue?\n[y/N] ");
+            if !confirm()? {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+    }
+    let done = ax_send::delete_via_ax(chat_name, text, scope, dry_run)?;
+    if json {
+        crate::util::output_json(&serde_json::json!({
+            "dry_run": dry_run,
+            "action": "local_delete",
+            "chat_name": chat_name,
+            "scope": scope.as_str(),
+            "target": { "text": done.target_text, "outgoing": done.target_outgoing },
+            "status": if dry_run { "previewed" } else { "verified" },
+        }))?;
+    } else if dry_run {
+        eprintln!(
+            "[dry-run] Would delete ({}) in \"{}\": {}",
+            scope.menu_item(),
+            escape_terminal_text(chat_name),
+            serde_json::to_string(&escape_terminal_text(&truncate(&done.target_text, 80)))?
+        );
+    } else {
+        println!("delete verified.");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

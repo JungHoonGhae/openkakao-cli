@@ -74,7 +74,11 @@ open chat window titled exactly like the target (or, with `--open-if-needed`,
 one unique exact-name chat-list row), an empty composer, and verified
 window/text read-back immediately before the commit. After the commit may have
 happened, any result lacking both a cleared composer and an additional
-exact-text outgoing bubble is `uncertain` (`delivery_uncertain`).
+exact-text outgoing bubble is `uncertain` (`delivery_uncertain`). A photo or
+file counts only once its upload finished (the bubble shows `공유`); a failed
+upload (KakaoTalk's alert, red ✕ on the bubble) is `delivery_uncertain`. An
+alert left over the chat window that only acknowledges (one 확인/OK) is
+dismissed before a send and printed; any other dialog is `chat_dialog_open`.
 
 ## Focus Model
 
@@ -96,6 +100,13 @@ foreground app:
   `수정`, and confirm the mode by the composer description (`답장/수정 메시지
   입력`) and its banner before inserting text. Mentions cannot be completed by
   AX and stay manual.
+- Delete (experimental `local-delete --for-everyone|--for-me`): `AXShowMenu`
+  on the bubble, `AXPress` `모든 대화 상대에게서 삭제` or `나에게서만 삭제`
+  (KakaoTalk shows only what it allows: an absent item is
+  `delete_unavailable`), tick only the target row's `AXCheckBox` in the
+  selection mode ("삭제할 메시지를 선택하세요." 취소/확인), `확인`, then `삭제`
+  on a confirmation headed by that scope. Any earlier failure leaves the
+  selection mode; success needs one fewer bubble with that text.
 
 `--fallback-keys` keeps the older raise + Return / ⌘V / double-click routes.
 Those wait until the user has been idle for `--wait-idle` seconds and restore
@@ -200,7 +211,8 @@ Show `fix` to the human. Codes: `accessibility_not_granted`,
 `main_window_minimized`, `kakaotalk_not_on_all_spaces`, `chat_list_unavailable`,
 `chat_window_not_open`, `chat_not_found`, `chat_list_filtered`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
-`composer_busy`, `message_not_found`, `message_ambiguous`, `action_unverified`,
+`composer_busy`, `chat_dialog_open`, `delete_unavailable`, `message_not_found`,
+`message_ambiguous`, `action_unverified`,
 `user_active`, `ax_send_disabled`, `chat_not_allowed`, `invalid_file`,
 `attachment_unverified`, `file_type_refused`, `delivery_uncertain`,
 `login_rejected`, `login_needs_human`, `login_secret_missing`. Never retry a

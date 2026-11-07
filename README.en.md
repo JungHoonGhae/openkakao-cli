@@ -37,6 +37,7 @@
 - **Verified, not just sent.** Within those 0.4 s the composer clears and an additional exact-text outgoing bubble appears. When that cannot be proven the result is `delivery_uncertain`, and it is never retried automatically.
 - **Your focus stays.** An open chat window is used without raising KakaoTalk or posting keyboard or mouse events.
 - **Runs from your phone.** If a login on another device signs this Mac out, `ax-login` signs it back in from the keychain.
+- **Photos and files are verified once uploaded.** A bubble alone is not `sent`: KakaoTalk must finish the upload and show the bubble's `공유` button. A failed upload is `delivery_uncertain`, with KakaoTalk's own error text.
 
 > [!NOTE]
 > Server login (`login --save`/`login --manual`) is broken on most recent KakaoTalk macOS builds ([#15](https://github.com/JungHoonGhae/openkakao-cli/issues/15), [#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)). **Do NOT repeatedly retry login from an unregistered device** — Kakao may block your account's "sub-device login" or restrict the account (this has actually been reported). The local SQLCipher DB path (`local-chats`/`local-read`/`local-search`) is also currently unreliable on recent builds — use `ax-read` for reads, and `notif-watch` (notification stream, window-independent, self-sends excluded) or `ax-watch` for receive detection.
@@ -102,11 +103,13 @@ openkakao-cli ax-read "chat display name" -n 20
 # Read-only check of an open chat window (composer, 전송 button, file button)
 openkakao-cli doctor --chat "chat display name"
 
-# (experimental) Reply or edit in an open chat window without taking focus.
+# (experimental) Reply, edit or delete in an open chat window without taking focus.
 # The target bubble must match its whole text exactly.
 openkakao-cli local-reply "chat display name" "reply text" --to-last --dry-run   # show the target only
 openkakao-cli local-reply "chat display name" "reply text" --match "whole original text" -y
 openkakao-cli local-edit "chat display name" --match "your whole original text" "fixed text" -y
+openkakao-cli local-delete "chat display name" --match "your whole original text" --for-everyone -y   # 모든 대화 상대에게서 삭제
+openkakao-cli local-delete "chat display name" --match "whole text" --for-me -y                      # 나에게서만 삭제 (this Mac)
 
 # 4. Detect incoming messages (AX) — polls the chat list and fires a hook/webhook
 #    when a chat's unread count rises (no server contact)
@@ -194,7 +197,7 @@ openkakao-cli --unattended --allow-watch-side-effects watch \
 To use it directly from Claude Code or Codex:
 
 ```bash
-openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/skills@openkakao-cli
+openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/openkakao-cli
 ```
 
 ## Highlights
@@ -282,7 +285,7 @@ Read-only operations are always available:
 | `local-send-file ... --dry-run` | Preview an AX file send (path and size validated) | None |
 | `local-send-photo ... --dry-run` | Preview an AX photo send without executing | None |
 | `doctor --chat <chat_name>` | Inspect an open chat window (composer, `전송` and file buttons); presses nothing | None |
-| `local-reply/local-edit ... --dry-run` | (experimental) Find and show the bubble a reply/edit would target | None |
+| `local-reply/local-edit/local-delete ... --dry-run` | (experimental) Find and show the bubble a reply/edit/delete would target | None |
 | `safe-send propose/list` | Persist or inspect send proposals (never sends) | None |
 
 > [!NOTE]
@@ -313,7 +316,9 @@ With `--json`, failures print `{"error": {"code", "message", "fix", "disposition
 | `action_unverified` | KakaoTalk did not show the expected reply/edit state, so nothing more was done | Check the chat window and close a leftover banner with its X (never Esc) |
 | `staging_conflict` | `~/Downloads` already has a different file with this name | Send it from the top level of Downloads, Desktop or Documents, or rename it |
 | `user_active` | You kept typing during a `--fallback-keys` raise | Retry when idle, or `--wait-idle 0` |
-| `delivery_uncertain` | The send may have happened but was not proven | Check KakaoTalk before retrying; never retry blindly |
+| `delivery_uncertain` | The send may have happened but was not proven (including a failed upload: a red ✕ on the bubble) | Check KakaoTalk before retrying; never retry blindly |
+| `chat_dialog_open` | KakaoTalk shows a dialog in the chat window that asks a question (a lone 확인/OK alert is dismissed automatically and printed) | Answer it in KakaoTalk, then retry; remotely, the skill's agent-desktop recovery |
+| `delete_unavailable` | KakaoTalk's menu does not offer that delete (memo chat, someone else's message, or delete for everyone after 24 hours) | Leave it, or `--for-me` to remove it from this Mac only |
 | `file_type_refused` | KakaoTalk's file picker greys out this file type (seen with `.bin`) | Zip it, or send a document/image type |
 | Homebrew `untrusted tap` | Homebrew 7+ trust policy | `brew trust --formula junghoonghae/openkakao/openkakao-cli` |
 
@@ -368,10 +373,12 @@ openkakao-cli profile-hints --app-state --app-state-diff /tmp/profile-before.jso
 
 ```bash
 openkakao-cli init --skill claude   # or codex / all
-# manual install: npx skills add JungHoonGhae/skills@openkakao-cli
+# manual install: npx skills add JungHoonGhae/openkakao-cli
 ```
 
 `init` uses `npx skills add` when `npx` is available and otherwise downloads `SKILL.md` into `~/.claude/skills/openkakao-cli/` (or `~/.codex/skills/openkakao-cli/`). An installed skill is left as is and its location is shown.
+
+The skill lives in this repository at [`skills/openkakao-cli/`](skills/openkakao-cli/), so it ships with each CLI release (it moved from `JungHoonGhae/skills@openkakao-cli`). For an unattended Mac stuck on a KakaoTalk question or a failed upload bubble, it names [agent-desktop](https://agent-browser.dev/desktop) (`brew install agent-desktop`) as an optional dependency, for recovery only: sending, editing and deleting stay with openkakao.
 
 ## Development
 
