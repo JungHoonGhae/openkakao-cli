@@ -632,6 +632,35 @@ enum Commands {
         #[arg(long, help = "Show the targeted bubble without acting")]
         dry_run: bool,
     },
+    /// Change the name this account shows for a chat (채팅방 설정 → 편집),
+    /// focus-free; needs device-owner authentication
+    LocalRenameChat {
+        chat_name: String,
+        /// The new name (1 to 50 characters)
+        new_name: String,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// React to one message bubble with one of KakaoTalk's reactions
+    /// (사랑, 엄지척, 체크, 웃음, 놀라움, 슬픔, 축하해, 박수, ...), focus-free
+    /// through its menu's 리액션 (experimental; pressing the same one again
+    /// can take it back)
+    LocalReact {
+        chat_name: String,
+        /// The reaction's name as KakaoTalk labels it, e.g. 사랑 or 엄지척
+        #[arg(long)]
+        reaction: String,
+        /// The newest text bubble
+        #[arg(long, conflicts_with = "match_text")]
+        to_last: bool,
+        /// The bubble's whole text, exactly
+        #[arg(long = "match", required_unless_present = "to_last")]
+        match_text: Option<String>,
+        #[arg(short = 'y', long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Edit one of your own messages in an open chat window, focus-free (experimental)
     #[command(
         long_about = "Edit one of your own message bubbles via AX, without raising KakaoTalk \
@@ -718,6 +747,67 @@ enum Commands {
         chat_name: String,
         #[arg(short = 'n', long, default_value_t = 20)]
         count: usize,
+        /// Read the whole text of messages KakaoTalk folds behind 전체보기
+        /// (opens and closes each one's dialog, focus-free)
+        #[arg(long)]
+        expand: bool,
+    },
+    /// Back up a chat's whole history through KakaoTalk's own 텍스트 파일로
+    /// 저장 (CSV: Date, User, Message), focus-free
+    AxExport {
+        chat_name: String,
+        /// Move the export here (a file or folder; never overwrites)
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Search a chat's whole history (exports it through KakaoTalk first, or
+    /// searches an earlier export with --from)
+    AxSearch {
+        chat_name: String,
+        query: String,
+        /// Show at most this many matches, the newest ones
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+        /// Search this ax-export CSV instead of exporting again
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Keep the fresh export instead of removing it after the search
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Find friends through KakaoTalk's own friends-tab search (name and
+    /// status message), read-only
+    AxFriends { query: String },
+    /// Per-chat writing-style samples for agents: your own messages in one
+    /// chat (from KakaoTalk's export), kept only on this Mac
+    Style {
+        chat_name: String,
+        /// Export the chat and keep your newest 200 messages there
+        #[arg(long, conflicts_with_all = ["forget", "decline"])]
+        learn: bool,
+        /// Delete this chat's samples
+        #[arg(long, conflicts_with = "decline")]
+        forget: bool,
+        /// Remember that you do not want this chat's tone learned
+        #[arg(long)]
+        decline: bool,
+        /// Your name in this chat's export, if no message of yours is visible
+        #[arg(long)]
+        me: Option<String>,
+    },
+    /// Show a friend's 친구 정보 (private memo, own name), or set the memo and
+    /// the name this account shows for them; a rename needs device-owner
+    /// authentication
+    AxFriend {
+        name: String,
+        /// Set the private memo (only you see it; at most 200 characters; "" clears it)
+        #[arg(long)]
+        memo: Option<String>,
+        /// Set the name you see for this friend (at most 20 characters; "" restores theirs)
+        #[arg(long)]
+        rename: Option<String>,
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Watch for incoming KakaoTalk messages via AX (no server contact,
     /// background) and fire hooks/webhooks on unread-count increases
@@ -909,10 +999,17 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalReply { .. }
             | Commands::LocalEdit { .. }
             | Commands::LocalDelete { .. }
+            | Commands::LocalReact { .. }
+            | Commands::LocalRenameChat { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxLogin { .. }
             | Commands::AxRead { .. }
+            | Commands::AxExport { .. }
+            | Commands::AxFriends { .. }
+            | Commands::Style { .. }
+            | Commands::AxFriend { .. }
+            | Commands::AxSearch { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
             | Commands::Init { .. }
@@ -1687,6 +1784,62 @@ fn run(cli: Cli) -> Result<()> {
                 json,
             })?
         }
+        Commands::LocalRenameChat {
+            chat_name,
+            new_name,
+            yes,
+        } => {
+            require_ax_send(&config)?;
+            eprintln!(
+                "Rename KakaoTalk chat '{}' to '{}' (only you see this name)",
+                util::escape_terminal_text(&chat_name),
+                util::escape_terminal_text(&new_name)
+            );
+            if !yes {
+                eprint!("Continue?\n[y/N] ");
+                if !util::confirm()? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            ax_send::rename_chat_via_ax(&chat_name, &new_name)?;
+            if json {
+                util::output_json(&serde_json::json!({
+                    "chat_name": chat_name,
+                    "new_name": new_name,
+                    "status": "verified",
+                }))?;
+            } else {
+                println!("Renamed to '{}'.", util::escape_terminal_text(&new_name));
+            }
+        }
+        Commands::LocalReact {
+            chat_name,
+            reaction,
+            to_last,
+            match_text,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                warn_if_not_allowlisted(&config, &chat_name);
+            }
+            let target = match match_text {
+                Some(text) if !to_last => ax_send::BubbleTarget::Text(text),
+                _ => ax_send::BubbleTarget::Last,
+            };
+            commands::local_actions::cmd_local_react(
+                commands::local_actions::BubbleActionOptions {
+                    chat_name,
+                    target,
+                    text: reaction,
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
+        }
         Commands::LocalDelete {
             chat_name,
             text,
@@ -1761,13 +1914,60 @@ fn run(cli: Cli) -> Result<()> {
             account.or_else(|| config.ax.login_account.clone()),
             json,
         )?,
-        Commands::AxRead { chat_name, count } => {
-            commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
-                chat_name,
-                count,
-                json,
-            })?
+        Commands::AxFriends { query } => commands::ax_friends::cmd_ax_friends(&query, json)?,
+        Commands::Style {
+            chat_name,
+            learn,
+            forget,
+            decline,
+            me,
+        } => commands::style::cmd_style(commands::style::StyleOptions {
+            chat_name: &chat_name,
+            learn,
+            forget,
+            decline,
+            me: me.as_deref(),
+            json,
+        })?,
+        Commands::AxFriend {
+            name,
+            memo,
+            rename,
+            yes,
+        } => commands::ax_friends::cmd_ax_friend(commands::ax_friends::AxFriendOptions {
+            name: &name,
+            memo: memo.as_deref(),
+            rename: rename.as_deref(),
+            skip_confirm: yes,
+            json,
+        })?,
+        Commands::AxExport { chat_name, output } => {
+            commands::ax_export::cmd_ax_export(&chat_name, output.as_deref(), json)?
         }
+        Commands::AxSearch {
+            chat_name,
+            query,
+            limit,
+            from,
+            keep,
+        } => commands::ax_export::cmd_ax_search(commands::ax_export::AxSearchOptions {
+            chat_name: &chat_name,
+            query: &query,
+            limit,
+            from: from.as_deref(),
+            keep,
+            json,
+        })?,
+        Commands::AxRead {
+            chat_name,
+            count,
+            expand,
+        } => commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
+            chat_name,
+            count,
+            expand,
+            json,
+        })?,
         Commands::AxWatch {
             interval,
             hook_cmd,

@@ -1,7 +1,7 @@
 ---
 name: openkakao-cli
 description: >-
-  Work with OpenKakao CLI (`openkakao-cli` 1.13.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
+  Work with OpenKakao CLI (`openkakao-cli` 1.14.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
 ---
 
 # OpenKakao CLI
@@ -28,7 +28,14 @@ openkakao-cli doctor --chat "<chat name>"                    # read-only: compos
 
 | Need | Command | Notes |
 | --- | --- | --- |
-| Read an open chat | `openkakao-cli ax-read "<chat>" -n 20 --json` | 0.2 s; only rendered rows, so no full history. Gives `members` (group chats) and per message `time` (date and clock), `sender`, `outgoing`. Files show as `[파일]`, photos as `[사진]`; a long message shows its folded preview ending in `…`. |
+| Read an open chat | `openkakao-cli ax-read "<chat>" -n 20 --json` | 0.2 s; only rendered rows, so no full history. Gives `members`, `chat_id` (from notifications; a label, never proof) and per message `time`, `sender`, `outgoing`. Files show as `[파일]`, photos as `[사진]`. A long message shows its folded preview ending in `…`; add `--expand` to read it whole (~0.2 s each). |
+| Back up a chat | `openkakao-cli ax-export "<chat>" --output <dir> --json` | KakaoTalk's own 텍스트 파일로 저장: the whole history as CSV (`Date,User,Message`), ~4 s. |
+| Find an old message | `openkakao-cli ax-search "<chat>" "<query>" --json` | exports, searches, removes the export (`--keep` keeps it, `--from <csv>` searches a backup instantly). |
+| Find a friend | `openkakao-cli ax-friends "<query>" --json` | KakaoTalk's friend search: name and status message, read-only. |
+| A friend's private memo | `openkakao-cli ax-friend "<exact name>" --json`; `--memo "<text>" -y` sets it | the memo only the user sees (200 chars): read it before writing to that person, and keep durable facts there with the user's say. `--rename` changes the name this account shows and needs device-owner authentication. |
+| React to a message | `openkakao-cli local-react "<chat>" --match "<exact text>" --reaction 사랑 -y` | reactions: 사랑, 엄지척, 체크, 웃음, 놀라움, 슬픔, 축하해, 박수, 기도, 손하트, … Same approval as a send. KakaoTalk does not show whose reactions a bubble has, and pressing one you already gave takes it back: on a bubble that already has reactions the result is `delivery_uncertain`; never press again without looking. |
+| Rename a chat | `openkakao-cli local-rename-chat "<chat>" "<new name>" -y` | the name only this account sees; device-owner authentication. |
+| The user's tone | `openkakao-cli style "<chat>" --json` | see "Writing like the user" below. |
 | Send text | `openkakao-cli local-send "<chat>" "<text>" -y --json` | ~0.4 s, verified by the new bubble. Newlines: `$'첫줄\n둘째줄'` (one bubble). Ends with the signature line `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` (`[send] signature` changes it, `--no-prefix` drops it). A message KakaoTalk folds behind 전체보기 (over 500 UTF-16 units) is still verified. |
 | Send any file | `openkakao-cli local-send-file "<chat>" <path> -y --json` | docx, xlsx, pdf, zip, txt, images; up to `[ax] max_file_mb` (300). `sent` only once KakaoTalk finished the upload (the bubble shows 공유). A file outside the top level of Desktop/Documents/Downloads is hard-linked into `~/Downloads` and removed after the upload. |
 | Send a photo | `openkakao-cli local-send-photo "<chat>" <image> -y --json` | same path with image checks (50 MiB); ~2 s plus the upload. |
@@ -42,6 +49,16 @@ openkakao-cli doctor --chat "<chat name>"                    # read-only: compos
 | KakaoTalk logged out | `openkakao-cli ax-login --account <id>` | password from the keychain item `openkakao.kakaotalk`; never retry `login_rejected`. |
 
 Chats are matched by their **exact display name** (the window title). The memo chat is titled with the user's own display name, not "나와의 채팅". Two open windows with the same title refuse.
+
+## Writing like the user
+
+The user writes differently to each person, so tone is learned per chat. Before composing a message for a chat, run `style "<chat>" --json`:
+
+- `learned`: read the file at `path` (the user's own newest messages there) and match its tone, length, endings and emoji.
+- `not_asked`: ask the user once whether to learn this chat's tone; then `style "<chat>" --learn` (exports the chat, keeps only the user's messages, 0600, on this Mac) or `--decline`.
+- `declined`: write plainly; do not ask again.
+
+Show drafts for other people's chats to the user before sending, unless they gave the exact text.
 
 ## What a real send needs
 
@@ -107,6 +124,7 @@ AX lists only the windows of the active Space. Two ways to live with it:
 ## Guardrails
 
 - Never add `--dangerously-skip-allowlist` or `allow_skip_allowlist` on your own.
+- Sending an emoticon needs a physical click (KakaoTalk exposes no AX action on its emoticon grid); do not attempt it without the user's explicit go-ahead for raising KakaoTalk.
 - Test on the memo chat first. Send to, edit or delete in other people's chats only when the user explicitly says so, with the exact text they approved. Keep `allowed_send_chats` tight and preview with `--dry-run`.
 - On `delivery_uncertain`, read the chat and report; a second attempt duplicates the message.
 - Never post the Escape key to KakaoTalk (it closes the chat window and the main window). Never raise KakaoTalk or post keys yourself; the CLI's default paths do not need to.

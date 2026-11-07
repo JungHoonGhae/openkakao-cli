@@ -370,6 +370,68 @@ fn read_kakao_payloads(db_path: &Path) -> Result<Vec<Vec<u8>>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The KakaoTalk notifications Notification Center still holds, read-only.
+pub fn retained_messages() -> Result<Vec<NotifMessage>> {
+    Ok(read_kakao_notifications(&notif_db_path()?)?.messages)
+}
+
+/// What the retained notifications say about one chat window's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatIdMatch {
+    /// One chat id, backed by this many visible messages.
+    Found {
+        chat_id: i64,
+        evidence: usize,
+    },
+    Unknown,
+    Ambiguous(Vec<i64>),
+}
+
+/// A chat window's KakaoTalk chat id, from notifications whose text equals
+/// an incoming message the window shows and whose title is that message's
+/// sender (group chats) or the window title (1:1 chats). Only one id among
+/// all matches counts; none or several stay unknown or ambiguous. Message
+/// text can be copied into another chat, so this is a label to show a
+/// person, never evidence for approving a send.
+pub fn resolve_chat_id(
+    window_title: &str,
+    visible: &[crate::ax_send::AxMessage],
+    retained: &[NotifMessage],
+) -> ChatIdMatch {
+    let mut ids: Vec<i64> = Vec::new();
+    let mut evidence = 0;
+    for message in visible
+        .iter()
+        .filter(|m| !m.outgoing && !m.text.trim().is_empty())
+    {
+        let matched: Vec<i64> = retained
+            .iter()
+            .filter(|n| {
+                n.body == message.text
+                    && (n.chat_name == window_title
+                        || message.sender.as_deref() == Some(n.chat_name.as_str()))
+            })
+            .map(|n| n.room_id)
+            .collect();
+        if !matched.is_empty() {
+            evidence += 1;
+        }
+        for id in matched {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    match ids.as_slice() {
+        [] => ChatIdMatch::Unknown,
+        [chat_id] => ChatIdMatch::Found {
+            chat_id: *chat_id,
+            evidence,
+        },
+        _ => ChatIdMatch::Ambiguous(ids),
+    }
+}
+
 /// One decoded Notification Center snapshot plus per-record diagnostics.
 /// Malformed records must not poison all later notifications, but they also
 /// must not disappear silently because they can signal KakaoTalk schema drift.
@@ -729,6 +791,67 @@ mod tests {
             .to_writer_binary(&mut buf)
             .expect("write bplist");
         buf
+    }
+
+    #[test]
+    fn chat_ids_need_one_room_among_all_matches() {
+        let notif = |room_id, title: &str, body: &str| NotifMessage {
+            chat_name: title.to_string(),
+            body: body.to_string(),
+            room_id,
+            msg_id: 1,
+            ts: 0.0,
+            attachment_path: String::new(),
+        };
+        let seen = |sender: Option<&str>, text: &str| crate::ax_send::AxMessage {
+            sender: sender.map(str::to_string),
+            text: text.to_string(),
+            ..Default::default()
+        };
+        let retained = vec![
+            notif(7, "귀몬❤️", "Omg sooo many people"),
+            notif(9, "친구 | 구자원", "민쥐이이"),
+            notif(10, "친구 | 구자원", "ㅋㅋ"),
+        ];
+        // 1:1: the notification title is the window title.
+        assert_eq!(
+            resolve_chat_id(
+                "귀몬❤️",
+                &[seen(Some("귀몬❤️"), "Omg sooo many people")],
+                &retained
+            ),
+            ChatIdMatch::Found {
+                chat_id: 7,
+                evidence: 1
+            }
+        );
+        // Group: the sender's name; the same sender's other room never counts.
+        assert_eq!(
+            resolve_chat_id(
+                "우리친구",
+                &[seen(Some("친구 | 구자원"), "민쥐이이")],
+                &retained
+            ),
+            ChatIdMatch::Found {
+                chat_id: 9,
+                evidence: 1
+            }
+        );
+        assert_eq!(
+            resolve_chat_id(
+                "우리친구",
+                &[
+                    seen(Some("친구 | 구자원"), "민쥐이이"),
+                    seen(Some("친구 | 구자원"), "ㅋㅋ")
+                ],
+                &retained
+            ),
+            ChatIdMatch::Ambiguous(vec![9, 10])
+        );
+        assert_eq!(
+            resolve_chat_id("정훈", &[seen(None, "다른 말")], &retained),
+            ChatIdMatch::Unknown
+        );
     }
 
     #[test]

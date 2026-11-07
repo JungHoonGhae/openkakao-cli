@@ -1,5 +1,7 @@
 pub mod analytics;
 pub mod auth;
+pub mod ax_export;
+pub mod ax_friends;
 pub mod ax_login;
 pub mod ax_read;
 pub mod ax_watch;
@@ -19,4 +21,5 @@ pub mod read;
 pub mod rest;
 pub mod safe_send;
 pub mod send;
+pub mod style;
 pub mod watch;
