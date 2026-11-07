@@ -4645,15 +4645,25 @@ end run
             let right = spans.iter().map(|s| s.1).fold(f64::NEG_INFINITY, f64::max);
             (left.is_finite() && right.is_finite()).then(|| (left + right) / 2.0)
         };
-        match (
-            bubble.role.as_str(),
-            time_label(row).and_then(AxNode::center_x),
-        ) {
+        // The clock, or in a same-minute row without one the 공유 button:
+        // both sit on the card's outer side.
+        let share_center = {
+            let mut buttons = Vec::new();
+            row.find_all("AXButton", &mut buttons);
+            buttons
+                .into_iter()
+                .find(|b| b.description.as_deref() == Some("공유"))
+                .and_then(AxNode::center_x)
+        };
+        let clock_center = time_label(row).and_then(AxNode::center_x);
+        if bubble.role != "AXTextArea" {
+            if let (Some(reference), Some(card)) = (clock_center.or(share_center), card_center) {
+                return reference < card;
+            }
+        }
+        match (bubble.role.as_str(), clock_center) {
             ("AXTextArea", _) => bubble_center.is_some_and(|x| x > table_center),
-            (_, Some(time_center)) => match card_center {
-                Some(card) => time_center < card,
-                None => time_center < table_center,
-            },
+            (_, Some(time_center)) => time_center < table_center,
             // A file row's share button sits on the outer side: left of an
             // outgoing bubble (measured), hence right of an incoming one.
             ("AXButton", None) => bubble_center.is_some_and(|x| x < table_center),
