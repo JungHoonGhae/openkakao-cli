@@ -4616,12 +4616,37 @@ end run
             return false;
         };
         let bubble_center = bubble.center_x();
+        // The clock sits on a card's outer side: left of our files and
+        // photos, right of incoming ones. The card is everything else in the
+        // row (a photo, or a file's name, size and 열기 buttons), without the
+        // clock, 공유 and 프로필. The table's center is no reference, since a
+        // wide window moves a right-aligned card's clock past it (26.8,
+        // measured 2026-11-07).
+        let card_center = {
+            let clock = time_label(row).map(|t| t.element.clone());
+            let mut nodes = Vec::new();
+            for role in ["AXStaticText", "AXImage", "AXButton"] {
+                row.find_all(role, &mut nodes);
+            }
+            let spans: Vec<(f64, f64)> = nodes
+                .into_iter()
+                .filter(|n| clock.as_ref().is_none_or(|c| !same_element(c, &n.element)))
+                .filter(|n| !matches!(n.description.as_deref(), Some("공유" | "프로필")))
+                .filter_map(|n| Some((n.position_x?, n.position_x? + n.width?)))
+                .collect();
+            let left = spans.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+            let right = spans.iter().map(|s| s.1).fold(f64::NEG_INFINITY, f64::max);
+            (left.is_finite() && right.is_finite()).then(|| (left + right) / 2.0)
+        };
         match (
             bubble.role.as_str(),
             time_label(row).and_then(AxNode::center_x),
         ) {
             ("AXTextArea", _) => bubble_center.is_some_and(|x| x > table_center),
-            (_, Some(time_center)) => time_center < table_center,
+            (_, Some(time_center)) => match card_center {
+                Some(card) => time_center < card,
+                None => time_center < table_center,
+            },
             // A file row's share button sits on the outer side: left of an
             // outgoing bubble (measured), hence right of an incoming one.
             ("AXButton", None) => bubble_center.is_some_and(|x| x < table_center),

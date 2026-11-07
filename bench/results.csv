@@ -6,3 +6,10 @@ version,date,command,ms
 1.14.0,2026-11-07,local-delete,3171
 1.14.0,2026-11-07,ax-chats-unread,12385
 1.14.0,2026-11-07,ax-export,4244
+1.14.1,2026-11-07,ax-read,294
+1.14.1,2026-11-07,ax-read-expand,673
+1.14.1,2026-11-07,local-send,571
+1.14.1,2026-11-07,local-edit,2492
+1.14.1,2026-11-07,local-delete,3247
+1.14.1,2026-11-07,ax-chats-unread,13343
+1.14.1,2026-11-07,ax-export,4199
