@@ -7119,6 +7119,89 @@ end run
         Ok(friends)
     }
 
+    /// The friends under the unfiltered friends tab's 생일인 친구 header,
+    /// read-only, each with KakaoTalk's day label as `status` ("오늘 11월 8일",
+    /// "어제 11월 7일"; 26.8, measured 2026-11-08). KakaoTalk shows only
+    /// birthdays around today there, and no header at all when there are none.
+    pub fn birthday_friends() -> Result<Vec<FriendRow>> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let (tab, snap) = friends_tab(&app)?;
+        if snap.find_first("AXTextField").is_some() {
+            return Err(coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's friend search is open, so the friends tab is filtered; close it first",
+            ));
+        }
+        let outline = snap
+            .find_first("AXOutline")
+            .map(|o| o.element.clone())
+            .ok_or_else(|| {
+                coded(
+                    ErrorCode::ChatListUnavailable,
+                    "the friends tab shows no list",
+                )
+            })?;
+        let (header, mut friends) = birthday_section(&outline);
+        if let (Some(header), true) = (header, friends.is_empty()) {
+            // Folded (the header's only button toggles it): unfold it for
+            // the read, then fold it back.
+            let toggle = |header: &AXUIElement| {
+                snapshot(header)
+                    .ok()
+                    .and_then(|node| node.find_first("AXButton").map(|b| b.element.clone()))
+                    .map(|button| button.perform_action(&CFString::new(kAXPressAction)))
+            };
+            toggle(&header);
+            sleep(Duration::from_millis(300));
+            let (header, unfolded) = birthday_section(&outline);
+            friends = unfolded;
+            if let Some(header) = header {
+                toggle(&header);
+            }
+            if friends.is_empty() {
+                return Err(coded(
+                    ErrorCode::ChatListUnavailable,
+                    "the 생일인 친구 section is folded in KakaoTalk's friends tab and did not unfold",
+                ));
+            }
+        }
+        drop(tab);
+        Ok(friends)
+    }
+
+    /// The 생일인 친구 header row and the friend rows under it. The section
+    /// sits above 즐겨찾는 친구 and 친구 (the long ones), so the walk reads a
+    /// dozen rows, not the whole list.
+    fn birthday_section(outline: &AXUIElement) -> (Option<AXUIElement>, Vec<FriendRow>) {
+        let rows = copy_attributes(outline, &["AXRows"])
+            .map(|values| children_in(&values, 0))
+            .unwrap_or_default();
+        let (mut header, mut friends) = (None, Vec::new());
+        for row in rows {
+            if let Some(friend) = friend_row(&row) {
+                if header.is_some() {
+                    friends.push(friend);
+                }
+                continue;
+            }
+            if header.is_some() {
+                break;
+            }
+            let title = snapshot(&row).ok().and_then(|node| {
+                node.find_first("AXStaticText")
+                    .and_then(|t| t.value.clone())
+            });
+            match title.as_deref() {
+                Some("생일인 친구") => header = Some(row),
+                Some("즐겨찾는 친구" | "친구") => break,
+                _ => {}
+            }
+        }
+        (header, friends)
+    }
+
     /// The 친구 정보 popover, which hangs off the friend row's name text
     /// (row → cell → static text → popover; 26.8, measured 2026-11-07).
     fn find_popover(row: &AXUIElement) -> Option<AXUIElement> {
@@ -9094,11 +9177,11 @@ end run
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    assign_kakaotalk_to_all_spaces, block_channel_via_ax, delete_via_ax, diagnose, edit_via_ax,
-    export_via_ax, friend_via_ax, launch_kakaotalk_in_background, leave_chat_via_ax, login_via_ax,
-    mark_read_via_ax, open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax,
-    reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    assign_kakaotalk_to_all_spaces, birthday_friends, block_channel_via_ax, delete_via_ax,
+    diagnose, edit_via_ax, export_via_ax, friend_via_ax, launch_kakaotalk_in_background,
+    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -9188,6 +9271,12 @@ mod stub {
     }
 
     pub fn search_friends(_query: &str) -> Result<Vec<FriendRow>> {
+        Err(anyhow!(
+            "ax-friends (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn birthday_friends() -> Result<Vec<FriendRow>> {
         Err(anyhow!(
             "ax-friends (AX automation) is only supported on macOS"
         ))
@@ -9296,11 +9385,11 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    assign_kakaotalk_to_all_spaces, block_channel_via_ax, delete_via_ax, diagnose, edit_via_ax,
-    export_via_ax, friend_via_ax, launch_kakaotalk_in_background, leave_chat_via_ax, login_via_ax,
-    mark_read_via_ax, open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax,
-    reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified,
-    BubbleAction, ChatListRow,
+    assign_kakaotalk_to_all_spaces, birthday_friends, block_channel_via_ax, delete_via_ax,
+    diagnose, edit_via_ax, export_via_ax, friend_via_ax, launch_kakaotalk_in_background,
+    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must
