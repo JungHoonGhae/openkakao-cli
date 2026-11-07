@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.12.0] - 2026-11-07
 
 ### Fixed
 - **A photo or file is `sent` only once KakaoTalk finished uploading it.** The bubble appears when the upload starts, and KakaoTalk 26.8 shows a photo in flight with no "업로드 중" label, so a file staged into `~/Downloads` was removed while KakaoTalk was still reading it: the upload failed ("예상하지 못한 오류가 발생했습니다.", a red ✕ on the bubble) and openkakao still reported `sent`. Now the newest outgoing attachment must show its `공유` button; a KakaoTalk alert during the upload is `delivery_uncertain` with the alert's text, and the staged copy is kept until the upload ends.
