@@ -36,3 +36,11 @@ version,date,command,ms
 1.16.0,2026-11-07,ax-export,4254
 1.16.0,2026-11-07,local-leave-chat,2964
 1.16.0,2026-11-07,ax-friend-block,3237
+1.17.0,2026-11-08,ax-read,527
+1.17.0,2026-11-08,ax-read-expand,1305
+1.17.0,2026-11-08,local-send,652
+1.17.0,2026-11-08,local-edit,4402
+1.17.0,2026-11-08,local-delete,4892
+1.17.0,2026-11-08,ax-chats-unread,25650
+1.17.0,2026-11-08,ax-export,4250
+1.17.0,2026-11-08,ax-friends-birthdays,709

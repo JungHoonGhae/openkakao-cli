@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-11-08
+
+### Added
+- **`ax-friends --birthdays`** lists the friends KakaoTalk shows under 생일인 친구, each with its day label (`오늘 11월 8일`, `어제 11월 7일`), read-only, in about 1 s. It reads only the dozen rows above 즐겨찾는 친구, and a folded section is unfolded for the read and folded back. KakaoTalk for Mac lists only birthdays around today, not upcoming ones.
+- **The agent skill helps keep up with people.** It drafts birthday greetings in each chat's tone with the friend's memo in mind, sends only the ones the user approves, and suggests friends whose last chat is old.
+
 ## [1.16.0] - 2026-11-07
 
 ### Added

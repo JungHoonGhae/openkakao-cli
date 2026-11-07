@@ -800,8 +800,15 @@ enum Commands {
         keep: bool,
     },
     /// Find friends through KakaoTalk's own friends-tab search (name and
-    /// status message), read-only
-    AxFriends { query: String },
+    /// status message), read-only; --birthdays lists 생일인 친구 instead
+    AxFriends {
+        #[arg(required_unless_present = "birthdays")]
+        query: Option<String>,
+        /// List the friends KakaoTalk shows under 생일인 친구 (birthdays
+        /// around today, with its day label such as "오늘 11월 8일")
+        #[arg(long, conflicts_with = "query")]
+        birthdays: bool,
+    },
     /// Per-chat writing-style samples for agents: your own messages in one
     /// chat (from KakaoTalk's export), kept only on this Mac
     Style {
@@ -2057,7 +2064,9 @@ fn run(cli: Cli) -> Result<()> {
             account.or_else(|| config.ax.login_account.clone()),
             json,
         )?,
-        Commands::AxFriends { query } => commands::ax_friends::cmd_ax_friends(&query, json)?,
+        Commands::AxFriends { query, .. } => {
+            commands::ax_friends::cmd_ax_friends(query.as_deref(), json)?
+        }
         Commands::Style {
             chat_name,
             learn,

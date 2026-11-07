@@ -4,8 +4,13 @@ use crate::ax_send;
 use crate::util::{confirm, escape_terminal_text as esc};
 
 /// `ax-friends <query>`: friends KakaoTalk's own search lists, read-only.
-pub fn cmd_ax_friends(query: &str, json: bool) -> Result<()> {
-    let friends = ax_send::search_friends(query)?;
+/// `ax-friends --birthdays` (no query): the 생일인 친구 section, its day
+/// label as status.
+pub fn cmd_ax_friends(query: Option<&str>, json: bool) -> Result<()> {
+    let friends = match query {
+        Some(query) => ax_send::search_friends(query)?,
+        None => ax_send::birthday_friends()?,
+    };
     if json {
         let items: Vec<_> = friends
             .iter()
@@ -13,7 +18,10 @@ pub fn cmd_ax_friends(query: &str, json: bool) -> Result<()> {
             .collect();
         crate::util::output_json(&serde_json::json!({"query": query, "friends": items}))?;
     } else if friends.is_empty() {
-        println!("No friend matches \"{}\".", esc(query));
+        match query {
+            Some(query) => println!("No friend matches \"{}\".", esc(query)),
+            None => println!("No friend has a birthday around today."),
+        }
     } else {
         for f in &friends {
             match &f.status {

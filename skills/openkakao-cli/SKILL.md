@@ -1,7 +1,7 @@
 ---
 name: openkakao-cli
 description: >-
-  Work with OpenKakao CLI (`openkakao-cli` 1.16.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
+  Work with OpenKakao CLI (`openkakao-cli` 1.17.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), list friends' birthdays (`ax-friends --birthdays`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "kakao birthday", "카톡 생일", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
 ---
 
 # OpenKakao CLI
@@ -36,6 +36,7 @@ openkakao-cli doctor --chat "<chat name>"                    # read-only: compos
 | Back up a chat | `openkakao-cli ax-export "<chat>" --output <dir> --json` | KakaoTalk's own 텍스트 파일로 저장: the whole history as CSV (`Date,User,Message`), ~4 s. |
 | Find an old message | `openkakao-cli ax-search "<chat>" "<query>" --json` | exports, searches, removes the export (`--keep` keeps it, `--from <csv>` searches a backup instantly). |
 | Find a friend | `openkakao-cli ax-friends "<query>" --json` | KakaoTalk's friend search: name and status message, read-only. |
+| Birthdays | `openkakao-cli ax-friends --birthdays --json` | the friends KakaoTalk lists under 생일인 친구, each with its day label as `status` (`오늘 11월 8일`, `어제 11월 7일`), read-only, ~1 s. KakaoTalk for Mac shows only birthdays around today, never upcoming ones. See "Keeping up with people". |
 | A friend's private memo | `openkakao-cli ax-friend "<exact name>" --json`; `--memo "<text>" -y` sets it | the memo only the user sees (200 chars): read it before writing to that person, and keep durable facts there with the user's say. `--rename` changes the name this account shows and needs device-owner authentication. `--open-chat` opens (or starts) the 1:1 chat with them. |
 | React to a message | `openkakao-cli local-react "<chat>" --match "<exact text>" --reaction 사랑 -y` | reactions: 사랑, 엄지척, 체크, 웃음, 놀라움, 슬픔, 축하해, 박수, 기도, 손하트, … Same approval as a send. KakaoTalk does not show whose reactions a bubble has, and pressing one you already gave takes it back: on a bubble that already has reactions the result is `delivery_uncertain`; never press again without looking. |
 | Rename a chat | `openkakao-cli local-rename-chat "<chat>" "<new name>" -y` | the name only this account sees; device-owner authentication; never to an `allowed_send_chats` name. |
@@ -138,6 +139,15 @@ AX lists only the windows of the active Space. Two ways to live with it:
 
 - Leave KakaoTalk on one desktop: commands work while that desktop is active, and report `main_window_not_visible` / `chat_window_not_open` otherwise.
 - `openkakao-cli init --all-spaces` (Dock → Options → Assign To → All Desktops; restarts the Dock): commands work from every desktop, but KakaoTalk's windows then follow every desktop switch. Ask before changing this; it is a preference of the person using the Mac.
+
+## Keeping up with people
+
+When the user asks for help keeping in touch (birthdays, people they have not talked to in a while):
+
+- Birthdays: run `ax-friends --birthdays --json`. For each friend, read `ax-friend "<name>" --json` (the memo) and `style "<name>" --json` (their 1:1 chat's tone), draft a short greeting, and show the drafts together. Send only the ones the user approves, each with `local-send "<name>" "<text>" --open-if-needed -y`. Ask once which people to skip: not everyone in the friend list is someone the user talks to.
+- Every day: when the user asks for a daily check, run it on the Mac that runs KakaoTalk (cron, launchd, or a local scheduled agent): a cloud agent cannot reach KakaoTalk. The section shows today's and recent birthdays only, so a missed day can drop someone.
+- Staying in touch: `ax-chats --json` gives every chat's last message `time`. A 1:1 chat carries the friend's name, so friends whose chat is old, or who have none, are the ones to suggest.
+- Facts worth keeping (family, work, last meeting) go into the friend's memo (`ax-friend "<name>" --memo "<text>" -y`) with the user's say, so the next message can use them. Read the memo first: setting it replaces it.
 
 ## Guardrails
 
