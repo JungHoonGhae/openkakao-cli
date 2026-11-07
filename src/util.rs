@@ -10,7 +10,9 @@ use crate::model::ChatMember;
 pub static NO_COLOR: AtomicBool = AtomicBool::new(false);
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const SEND_PREFIX: &str = "🤖 [Sent via openkakao]";
+/// Appended under every outgoing message unless `--no-prefix` or
+/// `[send] signature = ""`; `[send] signature` replaces the text.
+pub const DEFAULT_SIGNATURE: &str = "⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ";
 
 pub fn color_enabled() -> bool {
     !NO_COLOR.load(Ordering::Relaxed)
@@ -20,11 +22,10 @@ pub fn debug_enabled() -> bool {
     std::env::var("OPENKAKAO_CLI_DEBUG").is_ok() || std::env::var("OPENKAKAO_RS_DEBUG").is_ok()
 }
 
-pub fn format_outgoing_message(message: &str, no_prefix: bool) -> String {
-    if no_prefix {
-        message.to_string()
-    } else {
-        format!("{} {}", SEND_PREFIX, message)
+pub fn format_outgoing_message(message: &str, signature: Option<&str>) -> String {
+    match signature.map(str::trim) {
+        Some(signature) if !signature.is_empty() => format!("{message}\n\n{signature}"),
+        _ => message.to_string(),
     }
 }
 

@@ -204,7 +204,9 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/openkakao-cli
 
 - **Fast**: 0.4 s per verified send, 0.2 s per read, about 100× faster than v1.9
 - **Stays off the paths behind reported bans**: no server login or LOCO traffic, only the official app is driven
-- **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID; same-name chats are never guessed (`--pick`)
+- **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID (`--dangerously-skip-allowlist` skips it); same-name chats are never guessed (`--pick`)
+- **Chat card**: before acting, it prints the member count, recent senders and last activity, plus the 3 newest messages for a chat outside the allowlist
+- **Signature**: messages end with `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`; change it with `[send] signature`, drop it with `--no-prefix`
 - **Remote recovery**: `ax-login` (keychain), and `disposition` in every `--json` error (whether a retry could send twice)
 - Send and read real messages **without logging in**, via `local-send`/`ax-read` (drives the KakaoTalk UI directly through the macOS Accessibility API, no server contact)
 - Extracts auth data from the macOS KakaoTalk app
@@ -308,7 +310,7 @@ With `--json`, failures print `{"error": {"code", "message", "fix", "disposition
 | `chat_not_allowed` | Touch ID was not given for a chat outside the allowlist | Approve the prompt, or allowlist it with `init --allow-chat` |
 | `main_window_not_visible`, `kakaotalk_not_on_all_spaces` | Main window closed or on another Space | `openkakao-cli init --all-spaces` (records Dock → Options → Assign To → All Desktops and restarts the Dock once) |
 | `chat_window_not_open` | No open window titled exactly like the chat | Open the chat window once, or pass `--open-if-needed` |
-| `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
+| `chat_not_found`, `chat_list_filtered` | Row not loaded, or the chat list is filtered by a search term | A chat whose name differs only in spacing or case is named with its last message (not opened). Clear the search field, then scroll the list or switch tabs so it repaints; the list can stay stale until the main window repaints |
 | `send_button_missing` | This build exposes no `전송` button | `--fallback-keys` |
 | `menu_not_found` | A context menu was not found (nothing else was done) | Retry or open the chat yourself; dismiss a visible menu by clicking elsewhere. **Never press Esc**: KakaoTalk closes its windows on Esc |
 | `composer_busy` | The composer holds a draft or a pending reply/edit | Inspect it with `doctor --chat`, then `--discard-draft` (prints it before clearing) or tidy it up in KakaoTalk |

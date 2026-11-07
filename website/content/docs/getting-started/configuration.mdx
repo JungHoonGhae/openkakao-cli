@@ -51,6 +51,7 @@ unattended = true
 [send]
 allow_non_interactive = true
 default_prefix = true
+signature = "⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ"   # "" drops it
 
 [watch]
 allow_side_effects = true
@@ -79,7 +80,8 @@ allowed_send_chats = []
 |-----|------|---------|
 | `mode.unattended` | bool | declare that this environment may run without interactive confirmation |
 | `send.allow_non_interactive` | bool | allow `send -y`, `send-file -y`, and `send-photo -y` |
-| `send.default_prefix` | bool | keep or disable the default outgoing prefix |
+| `send.default_prefix` | bool | `false` drops the signature line under outgoing messages |
+| `send.signature` | string | the line appended under outgoing messages (default `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`; `""` drops it) |
 | `watch.allow_side_effects` | bool | allow read receipts, local hooks, and webhooks in watch mode |
 | `watch.default_max_reconnect` | int | override the default reconnect count for `watch` |
 | `auth.prefer_relogin` | bool | choose whether relogin or renew runs first during recovery |

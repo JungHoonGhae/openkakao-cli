@@ -59,7 +59,11 @@ human's standing approval: AX writes to that chat (`safe-send approve`,
 `local-send*`, `local-reply`, `local-edit`) need no further authentication.
 Any other target is flagged with `⚠ NOT in [safety] allowed_send_chats` and
 needs macOS device-owner authentication (Touch ID or login password) right
-before the commit; a declined prompt is `chat_not_allowed`. The opt-in
+before the commit; a declined prompt is `chat_not_allowed`. Every AX write
+first prints which chat it is (members, recent senders, last activity), and
+for a chat outside the allowlist its three newest messages. The global
+`--dangerously-skip-allowlist` skips that prompt (not `--pick`'s); agents
+use it only when the user asked for it. The opt-in
 `[safety] device_owner_auth_grace_secs` (default 0) reuses one approval for
 that many seconds, sudo-style, and only the human sets it. Agents stop after
 `safe-send propose`; a human reviews and approves. There is no unattended

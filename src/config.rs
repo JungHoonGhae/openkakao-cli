@@ -48,7 +48,10 @@ pub struct ModeConfig {
 pub struct SendConfig {
     #[serde(default)]
     pub allow_non_interactive: bool,
+    /// `false` drops the signature (kept from when it was a prefix).
     pub default_prefix: Option<bool>,
+    /// The line appended under outgoing messages; `""` drops it.
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

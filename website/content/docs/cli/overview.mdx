@@ -45,7 +45,8 @@ openkakao-cli [OPTIONS] <COMMAND>
 | `--unattended` | Declare non-interactive operation |
 | `--allow-non-interactive-send` | Allow `send -y` and file send `-y` in unattended mode |
 | `--allow-watch-side-effects` | Allow watch read receipts, hooks, and webhooks in unattended mode |
-| `--no-prefix` | Don't prepend `🤖 [Sent via openkakao]` to outgoing messages |
+| `--no-prefix` | Don't append the `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` signature line (`[send] signature`) to outgoing messages |
+| `--dangerously-skip-allowlist` | AX: act in a chat outside `[safety] allowed_send_chats` without device-owner authentication |
 | `--completion-promise` | Print `[DONE]` to stdout after successful command completion |
 | `--version` | Show version |
 | `--help` | Show help |
