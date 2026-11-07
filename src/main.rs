@@ -2073,8 +2073,23 @@ fn run(cli: Cli) -> Result<()> {
             json,
         })?,
         Commands::AxFriend {
-            name, block: true, ..
+            name,
+            block: true,
+            yes,
+            ..
         } => {
+            require_ax_send(&config)?;
+            eprintln!(
+                "Block KakaoTalk channel '{}' (its ads stop; 설정 > 친구 > 차단친구 관리 undoes it)",
+                util::escape_terminal_text(&name)
+            );
+            if !yes {
+                eprint!("Continue?\n[y/N] ");
+                if !util::confirm()? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
             ax_send::block_channel_via_ax(&name)?;
             if json {
                 util::output_json(&serde_json::json!({"name": name, "status": "blocked"}))?;

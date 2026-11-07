@@ -7780,7 +7780,8 @@ end run
         let app = bounded_application(pid)?;
         let main_window = find_or_show_main_window(&app)?;
         let (search, row) = exact_chat_row(&main_window, chat_display_name)?;
-        if !super::skips_allowlist() {
+        // Like every --pick, a pick among same-name chats is always approved.
+        if super::policy().pick.is_some() || !super::skips_allowlist() {
             openkakao_cli::human_auth::require_device_owner_auth(&format!(
                 "Approve leaving the KakaoTalk chat ‘{}’ (its messages are removed from this account)",
                 crate::util::escape_terminal_text(chat_display_name)
