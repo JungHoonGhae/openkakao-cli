@@ -26,11 +26,13 @@ pub fn cmd_ax_read(opts: AxReadOptions) -> Result<()> {
         let items: Vec<_> = messages
             .iter()
             .map(|m| {
+                let bare = m.text.strip_suffix(crate::util::WATERMARK);
                 serde_json::json!({
                     "time": m.time,
                     "sender": m.sender,
                     "outgoing": m.outgoing,
-                    "text": m.text,
+                    "text": bare.unwrap_or(&m.text),
+                    "via_openkakao": bare.is_some(),
                 })
             })
             .collect();
@@ -57,7 +59,11 @@ pub fn cmd_ax_read(opts: AxReadOptions) -> Result<()> {
                 (Some(sender), false) => format!("{}: ", esc(sender)),
                 (None, false) => String::new(),
             };
-            let text: Vec<String> = m.text.lines().map(esc).collect();
+            let shown = m
+                .text
+                .strip_suffix(crate::util::WATERMARK)
+                .unwrap_or(&m.text);
+            let text: Vec<String> = shown.lines().map(esc).collect();
             let text = text.join("\n");
             match &m.time {
                 Some(t) => println!("[{}] {who}{text}", esc(t)),

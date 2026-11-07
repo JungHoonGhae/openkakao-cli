@@ -204,6 +204,7 @@ openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/openkakao
 - **사람 승인 모델**: 화이트리스트 방은 바로 전송, 그 밖의 방은 ⚠ 표시와 Touch ID(사람이 `[safety] allow_skip_allowlist = true`를 켜 두면 `--dangerously-skip-allowlist`로 생략 가능). 이름이 같은 방은 추측하지 않고 `--pick`
 - **방 확인 카드**: 보내기 전에 인원수·최근 보낸 사람·마지막 대화 시각을, 화이트리스트 밖의 방은 최근 메시지 3개까지 보여 줍니다
 - **백업·검색**: `ax-export`(카카오톡 공식 내보내기, 전체 대화 CSV), `ax-search`, 접힌 긴 메시지는 `ax-read --expand`
+- **받은 메시지 정리**: `ax-chats --unread`로 안 읽은 방을 보고 `local-mark-read`로 광고 채널을 열지 않고 읽음 처리
 - **친구·리액션·말투**: `ax-friends`/`ax-friend`(나만 보는 메모), `local-react`, `local-rename-chat`, 방별 말투 학습 `style`
 - **서명**: 메시지 맨 아래에 `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`. `[send] signature`로 바꾸고 `--no-prefix`로 뺍니다
 - **원격 복구**: `ax-login`(키체인), 에이전트용 `--json` 에러의 `disposition`(재시도해도 중복 전송이 없는지)

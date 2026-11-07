@@ -52,6 +52,8 @@ pub struct SendConfig {
     pub default_prefix: Option<bool>,
     /// The line appended under outgoing messages; `""` drops it.
     pub signature: Option<String>,
+    /// The invisible end marker on outgoing messages (default on).
+    pub watermark: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -15,7 +15,11 @@ use crate::util::escape_terminal_text as esc;
 const SAMPLES: usize = 200;
 
 /// Tool-sent markers: a message carrying one was not written by the user.
-const TOOL_MARKS: [&str; 2] = ["Sent via openkakao", "ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ"];
+const TOOL_MARKS: [&str; 3] = [
+    "Sent via openkakao",
+    "ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ",
+    crate::util::WATERMARK,
+];
 
 fn style_dir() -> Result<PathBuf> {
     Ok(dirs::home_dir()

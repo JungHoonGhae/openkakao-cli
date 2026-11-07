@@ -230,6 +230,18 @@ pub(crate) fn picked_row(
     matches.nth(pick?.checked_sub(1)?)
 }
 
+/// The same message text, whether or not it ends with openkakao's invisible
+/// watermark (`--match` is written without it).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn same_text(bubble: &str, text: &str) -> bool {
+    let bare = |t: &str| {
+        t.strip_suffix(crate::util::WATERMARK)
+            .unwrap_or(t)
+            .to_string()
+    };
+    bare(bubble) == bare(text)
+}
+
 /// KakaoTalk folds a long message behind 전체보기: the bubble's AX text is
 /// the first 500 UTF-16 units and `…` (26.8, measured 2026-11-07). The floor
 /// keeps a short bubble that happens to end in `…` from matching.
@@ -934,7 +946,7 @@ fn pick_bubble(bubbles: &[(String, bool)], target: &BubbleTarget, own_only: bool
         BubbleTarget::Text(text) => {
             let matching: Vec<usize> = indices
                 .into_iter()
-                .filter(|&index| bubbles[index].0 == *text)
+                .filter(|&index| same_text(&bubbles[index].0, text))
                 .collect();
             match matching.as_slice() {
                 [index] => BubblePick::Found(*index),
@@ -993,7 +1005,7 @@ fn edit_verified(
 ) -> bool {
     let outgoing_with = |rows: &[(String, bool, bool)], text: &str| {
         rows.iter()
-            .filter(|(body, outgoing, _)| *outgoing && body == text)
+            .filter(|(body, outgoing, _)| *outgoing && same_text(body, text))
             .count()
     };
     let edited_now = after
@@ -1071,7 +1083,7 @@ fn delete_verified(
 ) -> bool {
     let count = |rows: &[(String, bool)]| {
         rows.iter()
-            .filter(|(body, from_me)| *from_me == outgoing && body == text)
+            .filter(|(body, from_me)| *from_me == outgoing && same_text(body, text))
             .count()
     };
     count(after) + 1 == count(before)
@@ -3897,6 +3909,17 @@ end run
     /// through to keys or clicks: a missing menu or item is reported, and a
     /// found menu is always closed with `AXCancel` unless its item was pressed.
     fn open_row_via_context_menu(app: &AXUIElement, row: &AXUIElement) -> Result<()> {
+        press_row_menu_item(app, row, OPEN_CHAT_MENU_TITLES, "채팅방 열기")
+    }
+
+    /// Press one item of a chat-list row's context menu (`채팅방 열기`,
+    /// `읽음 처리`), never keys or clicks; a found menu is always closed.
+    fn press_row_menu_item(
+        app: &AXUIElement,
+        row: &AXUIElement,
+        titles: &[&str],
+        label: &str,
+    ) -> Result<()> {
         // KakaoTalk 26.9 exposes AXShowMenu on the row's cell.
         let target = row
             .children()
@@ -3925,7 +3948,7 @@ end run
             .filter(|(_, title)| {
                 title
                     .as_deref()
-                    .is_some_and(|title| OPEN_CHAT_MENU_TITLES.contains(&title.trim()))
+                    .is_some_and(|title| titles.contains(&title.trim()))
             })
             .collect();
         let [(item, _)] = open.as_slice() else {
@@ -3938,7 +3961,7 @@ end run
             return Err(coded(
                 ErrorCode::MenuNotFound,
                 format!(
-                    "the chat-list row's context menu has no unique 채팅방 열기 item (items: {:?}){stray}",
+                    "the chat-list row's context menu has no unique {label} item (items: {:?}){stray}",
                     items
                         .iter()
                         .map(|(_, title)| title.clone())
@@ -3950,12 +3973,12 @@ end run
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
                 ErrorCode::UserActive,
-                "the mouse cursor is over the chat-list row's context menu; 채팅방 열기 was not pressed",
+                format!("the mouse cursor is over the chat-list row's context menu; {label} was not pressed"),
             ));
         }
         let pressed = item
             .perform_action(&CFString::new(kAXPressAction))
-            .map_err(|error| anyhow!("could not press 채팅방 열기: {error:?}"));
+            .map_err(|error| anyhow!("could not press {label}: {error:?}"));
         if menu_still_open(app) {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
         }
@@ -6359,7 +6382,23 @@ end run
         };
         let _ = state.composer.set_value(CFString::new("").as_CFType());
         if state.banner == super::ComposerMode::Unknown {
-            String::new()
+            return String::new();
+        }
+        // The reply/edit banner's own 닫기 (not the window's 닫기 버튼)
+        // leaves the mode (26.8, measured 2026-11-07).
+        if let Ok(snap) = snapshot_shallow(window) {
+            let mut buttons = Vec::new();
+            snap.find_all("AXButton", &mut buttons);
+            if let Some(close) = buttons
+                .iter()
+                .find(|b| b.description.as_deref() == Some("닫기"))
+            {
+                let _ = close.element.perform_action(&CFString::new(kAXPressAction));
+            }
+        }
+        let still = composer_state(window).map(|state| state.banner);
+        if matches!(still, Ok(super::ComposerMode::Unknown)) {
+            "; edit/reply mode was closed".to_string()
         } else {
             format!(
                 "; the {:?} banner is still showing, close it with its X in KakaoTalk (never Esc)",
@@ -6777,7 +6816,8 @@ end run
         let prepared = (|| {
             let state = wait_for_mode(&window, super::ComposerMode::Edit)?;
             trace(started, "edit mode loaded");
-            if !wait_for_composer_value(&state.composer, old) {
+            // KakaoTalk preloads the bubble's own text, watermark included.
+            if !wait_for_composer_value(&state.composer, &bubble.text) {
                 return Err(coded(
                     ErrorCode::ActionUnverified,
                     "edit mode did not load exactly the original text; nothing was changed",
@@ -7511,6 +7551,87 @@ end run
             sleep(Duration::from_millis(50));
         }
         Ok(())
+    }
+
+    /// `local-mark-read`: KakaoTalk's own 읽음 처리 for one chat without
+    /// opening it, focus-free. The row is found like `--open-if-needed`
+    /// finds it (KakaoTalk's chat search, exact name, duplicates refuse or
+    /// `--pick`), so a recycled list row can never stand in for it, and
+    /// success needs the row's unread badge gone.
+    pub fn mark_read_via_ax(chat_display_name: &str) -> Result<u32> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let main_window = find_or_show_main_window(&app)?;
+        ensure_chatrooms_tab(&main_window, true)?;
+        // Right after another search closed, the list is still restoring and
+        // a new search would read its rows (see restored_chat_list).
+        let snap = match restored_chat_list(&main_window) {
+            Some(snap) => snap,
+            None => ensure_chatrooms_tab(&main_window, true)?,
+        };
+        let (search, rows) =
+            filter_chat_list(&main_window, &snap, chat_display_name).ok_or_else(|| {
+                coded(
+                    ErrorCode::ChatListUnavailable,
+                    "KakaoTalk's chat search did not behave as measured (is its search field already open?)",
+                )
+            })?;
+        let names: Vec<Option<String>> = rows.iter().map(|(_, name)| name.clone()).collect();
+        let row = match super::match_chat_row(&names, chat_display_name) {
+            super::ChatMatch::Found(index) => rows[index].0.clone(),
+            super::ChatMatch::NotFound => {
+                return Err(coded(
+                    ErrorCode::ChatNotFound,
+                    format!(
+                        "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}'"
+                    ),
+                ))
+            }
+            super::ChatMatch::Ambiguous(count) => {
+                match super::policy()
+                    .pick
+                    .and_then(|n| super::picked_row(&names, chat_display_name, Some(n)))
+                {
+                    Some(index) => rows[index].0.clone(),
+                    None => {
+                        return Err(coded(
+                            ErrorCode::ChatAmbiguous,
+                            format!("{count} chats are named '{chat_display_name}'; choose one with --pick <N> (top to bottom)"),
+                        ))
+                    }
+                }
+            }
+        };
+        let unread = snapshot(&row)
+            .ok()
+            .and_then(|node| chat_row(&node))
+            .map_or(0, |r| r.unread);
+        if unread == 0 {
+            drop(search);
+            return Ok(0);
+        }
+        press_row_menu_item(&app, &row, &["읽음 처리", "Mark as Read"], "읽음 처리")?;
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let now = snapshot(&row).ok().and_then(|node| chat_row(&node));
+            if now
+                .as_ref()
+                .is_some_and(|r| r.unread == 0 && r.name == chat_display_name)
+            {
+                drop(search);
+                return Ok(u32::try_from(unread).unwrap_or(0));
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!(
+                        "pressed 읽음 처리 but '{chat_display_name}' still shows unread messages"
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
     }
 
     /// `ax-export`: the chat's whole history through KakaoTalk's own
@@ -8690,9 +8811,9 @@ end run
 #[cfg(target_os = "macos")]
 pub use imp::{
     assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, react_via_ax, read_via_ax,
-    rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax,
-    send_via_ax_classified, BubbleAction, ChatListRow,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -8797,6 +8918,12 @@ mod stub {
         ))
     }
 
+    pub fn mark_read_via_ax(_chat_display_name: &str) -> Result<u32> {
+        Err(anyhow!(
+            "local-mark-read (AX automation) is only supported on macOS"
+        ))
+    }
+
     pub fn export_via_ax(_chat_display_name: &str) -> Result<std::path::PathBuf> {
         Err(anyhow!(
             "ax-export (AX automation) is only supported on macOS"
@@ -8867,9 +8994,9 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, react_via_ax, read_via_ax,
-    rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax,
-    send_via_ax_classified, BubbleAction, ChatListRow,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must
