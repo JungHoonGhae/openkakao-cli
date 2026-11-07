@@ -4,12 +4,12 @@ use crate::ax_send;
 use crate::util::{confirm, escape_terminal_text as esc};
 
 /// `ax-friends <query>`: friends KakaoTalk's own search lists, read-only.
-/// `ax-friends --birthdays` (no query): the 생일인 친구 section, its day
-/// label as status.
-pub fn cmd_ax_friends(query: Option<&str>, json: bool) -> Result<()> {
+/// `ax-friends --birthdays [--favorites]` (no query): the 생일인 친구
+/// section, its day label as status.
+pub fn cmd_ax_friends(query: Option<&str>, favorites: bool, json: bool) -> Result<()> {
     let friends = match query {
         Some(query) => ax_send::search_friends(query)?,
-        None => ax_send::birthday_friends()?,
+        None => ax_send::birthday_friends(favorites)?,
     };
     if json {
         let items: Vec<_> = friends

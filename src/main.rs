@@ -808,6 +808,9 @@ enum Commands {
         /// around today, with its day label such as "오늘 11월 8일")
         #[arg(long, conflicts_with = "query")]
         birthdays: bool,
+        /// With --birthdays, keep only friends under 즐겨찾는 친구
+        #[arg(long, requires = "birthdays", conflicts_with = "query")]
+        favorites: bool,
     },
     /// Per-chat writing-style samples for agents: your own messages in one
     /// chat (from KakaoTalk's export), kept only on this Mac
@@ -2064,9 +2067,9 @@ fn run(cli: Cli) -> Result<()> {
             account.or_else(|| config.ax.login_account.clone()),
             json,
         )?,
-        Commands::AxFriends { query, .. } => {
-            commands::ax_friends::cmd_ax_friends(query.as_deref(), json)?
-        }
+        Commands::AxFriends {
+            query, favorites, ..
+        } => commands::ax_friends::cmd_ax_friends(query.as_deref(), favorites, json)?,
         Commands::Style {
             chat_name,
             learn,
