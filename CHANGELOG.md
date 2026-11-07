@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.0] - 2026-11-07
+
+### Added
+- **`ax-friend <name> --open-chat`** opens the 1:1 chat with a friend through their menu's 채팅하기, even when no chat with them exists yet, and returns once its window is open.
+
+### Fixed
+- **KakaoTalk's menus are found under other apps' windows.** A menu was located with a system-wide hit test, which lands on whatever window is on top at that spot: with a security or permission dialog of another app over the menu, every menu action reported `menu_not_found`. The hit test now asks KakaoTalk alone.
+
 ## [1.14.1] - 2026-11-07
 
 ### Fixed

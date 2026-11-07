@@ -820,6 +820,9 @@ enum Commands {
         /// Set the name you see for this friend (at most 20 characters; "" restores theirs)
         #[arg(long)]
         rename: Option<String>,
+        /// Open (or start) the 1:1 chat with this friend through 채팅하기
+        #[arg(long, conflicts_with_all = ["memo", "rename"])]
+        open_chat: bool,
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -2016,9 +2019,25 @@ fn run(cli: Cli) -> Result<()> {
         })?,
         Commands::AxFriend {
             name,
+            open_chat: true,
+            ..
+        } => {
+            ax_send::open_friend_chat_via_ax(&name)?;
+            if json {
+                util::output_json(&serde_json::json!({"chat_name": name, "status": "opened"}))?;
+            } else {
+                println!(
+                    "Opened the chat with '{}'.",
+                    util::escape_terminal_text(&name)
+                );
+            }
+        }
+        Commands::AxFriend {
+            name,
             memo,
             rename,
             yes,
+            ..
         } => commands::ax_friends::cmd_ax_friend(commands::ax_friends::AxFriendOptions {
             name: &name,
             memo: memo.as_deref(),

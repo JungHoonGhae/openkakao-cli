@@ -17,7 +17,8 @@ run() { # name, then the command
   local name=$1; shift
   local start end
   start=$(now)
-  "$@" >/dev/null 2>&1 || { echo "$name failed" >&2; return 1; }
+  local out
+  out=$("$@" 2>&1) || { echo "$name failed: $(printf '%s' "$out" | grep -E '"(code|message)"' | head -2 | tr -s ' ')" >&2; return 1; }
   end=$(now)
   echo "$version,$date,$name,$((end - start))" | tee -a "$csv"
 }

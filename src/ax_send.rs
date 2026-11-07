@@ -3781,8 +3781,15 @@ end run
 
     /// The `AXMenu` drawn in a menu-layer window: hit-test just below its top
     /// edge (the first item) and climb `AXParent` to the menu.
-    fn menu_in_window((x, y, width, _height): (f64, f64, f64, f64)) -> Option<AXUIElement> {
-        let system = unsafe { AXUIElement::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+    /// The KakaoTalk menu in a layer-101 menu window, hit-tested within
+    /// KakaoTalk only: a system-wide hit test finds whatever window is on
+    /// top there, such as another app's security dialog, and misses the
+    /// menu under it (measured 2026-11-07).
+    fn menu_in_window(
+        pid: i32,
+        (x, y, width, _height): (f64, f64, f64, f64),
+    ) -> Option<AXUIElement> {
+        let system = AXUIElement::application(pid);
         let mut hit: AXUIElementRef = std::ptr::null_mut();
         let err = unsafe {
             AXUIElementCopyElementAtPosition(
@@ -3849,11 +3856,11 @@ end run
                     }
                 }
             }
-            if let Some(menu) = pid
-                .into_iter()
-                .flat_map(menu_windows)
-                .find_map(menu_in_window)
-            {
+            if let Some(menu) = pid.and_then(|pid| {
+                menu_windows(pid)
+                    .into_iter()
+                    .find_map(|bounds| menu_in_window(pid, bounds))
+            }) {
                 return Ok(Some(menu));
             }
             if Instant::now() >= deadline {
@@ -7207,6 +7214,58 @@ end run
         }
     }
 
+    /// `ax-friend --open-chat`: the friend's 1:1 chat through their menu's
+    /// 채팅하기, even when no chat with them exists yet. Returns once a
+    /// window titled with their name is open.
+    pub fn open_friend_chat_via_ax(name: &str) -> Result<()> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        if find_chat_window(&app, name)?.is_some() {
+            return Ok(());
+        }
+        let (tab, snap) = friends_tab(&app)?;
+        let (search, rows) = filter_list(&tab.main, &snap, name, "AXOutline").ok_or_else(|| {
+            coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's friend search did not behave as measured (is its search field already open?)",
+            )
+        })?;
+        let same: Vec<&AXUIElement> = rows
+            .iter()
+            .filter(|(row, _)| friend_row(row).is_some_and(|f| f.name == name))
+            .map(|(row, _)| row)
+            .collect();
+        let [row] = same.as_slice() else {
+            return Err(coded(
+                if same.is_empty() {
+                    ErrorCode::ChatNotFound
+                } else {
+                    ErrorCode::ChatAmbiguous
+                },
+                format!("{} friends are named exactly '{name}'", same.len()),
+            ));
+        };
+        let cell = row
+            .children()
+            .ok()
+            .and_then(|c| c.iter().next().map(|c| (*c).clone()))
+            .unwrap_or_else(|| (*row).clone());
+        press_menu_item_or(&app, &cell, "채팅하기", ErrorCode::MenuNotFound)?;
+        drop(search);
+        drop(tab);
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        loop {
+            if find_chat_window(&app, name)?.is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("KakaoTalk did not open a chat window titled '{name}' in time");
+            }
+            sleep(Duration::from_millis(100));
+        }
+    }
+
     /// `ax-friend`: read a friend's 친구 정보, and with `memo` / `rename` set
     /// them through KakaoTalk's own popover (확인), then read them back.
     /// The popover is always closed (AXCancel, never Esc).
@@ -7378,7 +7437,10 @@ end run
         trace(started, "메뉴 pressed");
         let deadline = Instant::now() + MENU_WAIT;
         let menu = loop {
-            if let Some(menu) = menu_windows(pid).into_iter().find_map(menu_in_window) {
+            if let Some(menu) = menu_windows(pid)
+                .into_iter()
+                .find_map(|bounds| menu_in_window(pid, bounds))
+            {
                 break menu;
             }
             if Instant::now() >= deadline {
@@ -8836,9 +8898,10 @@ end run
 #[cfg(target_os = "macos")]
 pub use imp::{
     assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
-    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
-    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax,
+    open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
+    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
+    ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -8919,6 +8982,12 @@ mod stub {
         pub nickname: String,
         pub own_name: Option<String>,
         pub memo: String,
+    }
+
+    pub fn open_friend_chat_via_ax(_name: &str) -> Result<()> {
+        Err(anyhow!(
+            "ax-friend (AX automation) is only supported on macOS"
+        ))
     }
 
     pub fn search_friends(_query: &str) -> Result<Vec<FriendRow>> {
@@ -9019,9 +9088,10 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
-    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
-    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax,
+    open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
+    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
+    ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must
