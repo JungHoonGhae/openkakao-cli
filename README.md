@@ -28,7 +28,7 @@
       <td align="center"><b>포커스 그대로</b><br /><sub>키보드·마우스를 뺏지 않음</sub></td>
     </tr>
   </table>
-  <img src="assets/demo.gif" alt="실제 화면: Claude Code에게 말로 시키자 openkakao로 할 일 목록을 보내고 답장까지 다는 모습(6배속). 이름과 프로필 사진은 가렸습니다" width="820" />
+  <img src="assets/demo.gif" alt="실제 화면: 고객이 카톡으로 견적을 물으면 Claude Code가 openkakao로 견적서 PDF와 일정표 이미지를 보내고, 요약 답장과 리액션까지 합니다(8배속, 이름은 가림)" width="820" />
 </div>
 
 ## 이런 일을 맡길 수 있습니다

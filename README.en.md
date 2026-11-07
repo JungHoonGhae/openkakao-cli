@@ -28,7 +28,7 @@
       <td align="center"><b>Focus stays yours</b><br /><sub>keyboard and mouse untouched</sub></td>
     </tr>
   </table>
-  <img src="assets/demo.gif" alt="Real screen: asked in plain words, Claude Code uses openkakao to send a to-do list and reply to it in KakaoTalk (6x speed; name and photo hidden)" width="820" />
+  <img src="assets/demo.gif" alt="Real screen: a client asks for a quote on KakaoTalk, and Claude Code uses openkakao to send the quote PDF and schedule image, reply with a summary and react (8x speed, name hidden)" width="820" />
 </div>
 
 ## What you can hand off

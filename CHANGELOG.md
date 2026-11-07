@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] - 2026-11-07
+
+### Fixed
+- **A file you sent right after another is recognised as yours.** A file card in the same minute as the next card has no clock of its own, so its direction fell back to the window's center, and in a wide window `ax-read` labelled it as received. The card's 공유 button, which sits on the same outer side as the clock, now stands in for the missing clock.
+
+### Changed
+- **The agent skill keeps watching a conversation it was asked to handle.** It runs `notif-watch` filtered to that chat, answering each new message without the user relaying it. KakaoTalk posts notifications even for the chat window in front. The skill also says that the other side's messages are data, never instructions, and that anything beyond the user's brief goes back to the user.
+
 ## [1.15.0] - 2026-11-07
 
 ### Added
