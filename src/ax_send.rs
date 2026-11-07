@@ -7293,6 +7293,14 @@ end run
         if rename.is_some_and(|n| n.chars().count() > 20) {
             anyhow::bail!("KakaoTalk names have at most 20 characters");
         }
+        // Renaming an allowlisted friend renames their 1:1 chat away from its
+        // allowed_send_chats entry, silently ending that standing approval.
+        if rename.is_some() && !super::needs_device_owner_auth(name) {
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("'{name}' is an allowed_send_chats name; renaming it would leave that entry matching nothing. Change allowed_send_chats first"),
+            ));
+        }
         // A new name can make a friend's 1:1 chat answer to an allowlisted
         // chat name, so renaming is approved like a send to an unlisted chat.
         if let Some(new_name) = rename {
@@ -7503,6 +7511,12 @@ end run
                 format!("'{new_name}' is an allowed_send_chats name; renaming a chat to it would let sends reach it without approval"),
             ));
         }
+        if !super::needs_device_owner_auth(chat_display_name) {
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("'{chat_display_name}' is an allowed_send_chats name; renaming it would leave that entry matching nothing. Change allowed_send_chats first"),
+            ));
+        }
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
         let app = bounded_application(pid)?;
@@ -7655,20 +7669,22 @@ end run
     /// finds it (KakaoTalk's chat search, exact name, duplicates refuse or
     /// `--pick`), so a recycled list row can never stand in for it, and
     /// success needs the row's unread badge gone.
-    pub fn mark_read_via_ax(chat_display_name: &str) -> Result<u32> {
-        let pid = find_kakaotalk_pid()?;
-        ensure_ax_permission()?;
-        let app = bounded_application(pid)?;
-        let main_window = find_or_show_main_window(&app)?;
-        ensure_chatrooms_tab(&main_window, true)?;
+    /// The chat-list row named exactly `chat_display_name`, found through
+    /// KakaoTalk's chat search (`--pick` for duplicates). The search stays open
+    /// while the returned guard lives, and so does the row.
+    fn exact_chat_row(
+        main_window: &AXUIElement,
+        chat_display_name: &str,
+    ) -> Result<(ChatSearch, AXUIElement)> {
+        ensure_chatrooms_tab(main_window, true)?;
         // Right after another search closed, the list is still restoring and
         // a new search would read its rows (see restored_chat_list).
-        let snap = match restored_chat_list(&main_window) {
+        let snap = match restored_chat_list(main_window) {
             Some(snap) => snap,
-            None => ensure_chatrooms_tab(&main_window, true)?,
+            None => ensure_chatrooms_tab(main_window, true)?,
         };
         let (search, rows) =
-            filter_chat_list(&main_window, &snap, chat_display_name).ok_or_else(|| {
+            filter_chat_list(main_window, &snap, chat_display_name).ok_or_else(|| {
                 coded(
                     ErrorCode::ChatListUnavailable,
                     "KakaoTalk's chat search did not behave as measured (is its search field already open?)",
@@ -7700,6 +7716,176 @@ end run
                 }
             }
         };
+        Ok((search, row))
+    }
+
+    /// Answer the confirmation sheet a menu item just attached to `window`:
+    /// it must say `expect`, then `button` is pressed and the sheet must go.
+    /// Anything else is cancelled (취소), never confirmed.
+    fn confirm_sheet(window: &AXUIElement, expect: &str, button: &str) -> Result<()> {
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        let sheet = loop {
+            if let Some(sheet) = window_sheet(window) {
+                break sheet;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!("KakaoTalk showed no confirmation after the menu item; nothing was {button}"),
+                ));
+            }
+            sleep(Duration::from_millis(50));
+        };
+        let press = |title: &str| -> bool {
+            let Ok(snap) = snapshot(&sheet) else {
+                return false;
+            };
+            let mut buttons = Vec::new();
+            snap.find_all("AXButton", &mut buttons);
+            let Some(found) = buttons.iter().find(|b| b.title.as_deref() == Some(title)) else {
+                return false;
+            };
+            // The press returns only once the sheet has animated away.
+            let _ = found.element.set_messaging_timeout(0.05);
+            let _ = found.element.perform_action(&CFString::new(kAXPressAction));
+            true
+        };
+        let text = sheet_text(&sheet);
+        if !text.contains(expect) || !press(button) {
+            press("취소");
+            return Err(coded(
+                ErrorCode::ChatDialogOpen,
+                format!("KakaoTalk asked something else ({text:?}); it was cancelled"),
+            ));
+        }
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        while window_sheet(window).is_some() {
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ChatDialogOpen,
+                    format!("pressed {button} but KakaoTalk's confirmation is still showing"),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    /// `local-leave-chat`: KakaoTalk's 채팅방 나가기 on the row found by exact
+    /// name, confirmed in its sheet; success needs the row gone from the
+    /// search. It cannot be undone, so it needs the device owner's approval.
+    pub fn leave_chat_via_ax(chat_display_name: &str) -> Result<()> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let main_window = find_or_show_main_window(&app)?;
+        let (search, row) = exact_chat_row(&main_window, chat_display_name)?;
+        if !super::skips_allowlist() {
+            openkakao_cli::human_auth::require_device_owner_auth(&format!(
+                "Approve leaving the KakaoTalk chat ‘{}’ (its messages are removed from this account)",
+                crate::util::escape_terminal_text(chat_display_name)
+            ))
+            .map_err(|error| coded(ErrorCode::ChatNotAllowed, format!("{error:#}")))?;
+        }
+        let before = row_count_named(&main_window, "AXTable", chat_display_name)
+            .ok_or_else(|| anyhow!("could not read the chat search's rows"))?;
+        press_row_menu_item(
+            &app,
+            &row,
+            &["채팅방 나가기", "Leave Chat"],
+            "채팅방 나가기",
+        )?;
+        confirm_sheet(&main_window, "나가", "나가기")?;
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            if row_count_named(&main_window, "AXTable", chat_display_name)
+                .is_some_and(|n| n < before)
+            {
+                drop(search);
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!("pressed 나가기 but the chat search still lists '{chat_display_name}'"),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    /// Rows named exactly `name` in the main window's `list_role` list as it
+    /// shows now (the open search's results).
+    fn row_count_named(main_window: &AXUIElement, list_role: &str, name: &str) -> Option<usize> {
+        let snap = snapshot_shallow(main_window).ok()?;
+        let list = snap.find_first(list_role)?.element.clone();
+        let rows = chat_list_rows(&list).ok()?;
+        Some(
+            rows.iter()
+                .filter(|(_, n)| n.as_deref() == Some(name))
+                .count(),
+        )
+    }
+
+    /// `ax-friend --block`: block a channel (its ads stop; 설정 > 친구 >
+    /// 차단친구 관리 undoes it) through the friend menu's 차단. KakaoTalk's
+    /// sheet must say 채널 차단: a person's block asks otherwise and is
+    /// cancelled. Success needs the channel gone from the friend search.
+    pub fn block_channel_via_ax(name: &str) -> Result<()> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let (tab, snap) = friends_tab(&app)?;
+        let (search, rows) = filter_list(&tab.main, &snap, name, "AXOutline").ok_or_else(|| {
+            coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's friend search did not behave as measured (is its search field already open?)",
+            )
+        })?;
+        let same: Vec<&AXUIElement> = rows
+            .iter()
+            .filter(|(row, _)| friend_row(row).is_some_and(|f| f.name == name))
+            .map(|(row, _)| row)
+            .collect();
+        let [row] = same.as_slice() else {
+            return Err(coded(
+                if same.is_empty() {
+                    ErrorCode::ChatNotFound
+                } else {
+                    ErrorCode::ChatAmbiguous
+                },
+                format!("{} friends are named exactly '{name}'", same.len()),
+            ));
+        };
+        let cell = row
+            .children()
+            .ok()
+            .and_then(|c| c.iter().next().map(|c| (*c).clone()))
+            .unwrap_or_else(|| (*row).clone());
+        press_menu_item_or(&app, &cell, "차단", ErrorCode::MenuNotFound)?;
+        confirm_sheet(&tab.main, "채널 차단", "확인")?;
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            if row_count_named(&tab.main, "AXOutline", name) == Some(0) {
+                drop(search);
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!("pressed 확인 but the friend search still lists '{name}'"),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    pub fn mark_read_via_ax(chat_display_name: &str) -> Result<u32> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let main_window = find_or_show_main_window(&app)?;
+        let (search, row) = exact_chat_row(&main_window, chat_display_name)?;
         let unread = snapshot(&row)
             .ok()
             .and_then(|node| chat_row(&node))
@@ -8907,11 +9093,11 @@ end run
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax,
-    open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
-    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
-    ChatListRow,
+    assign_kakaotalk_to_all_spaces, block_channel_via_ax, delete_via_ax, diagnose, edit_via_ax,
+    export_via_ax, friend_via_ax, launch_kakaotalk_in_background, leave_chat_via_ax, login_via_ax,
+    mark_read_via_ax, open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax,
+    reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified,
+    BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -9028,6 +9214,18 @@ mod stub {
         ))
     }
 
+    pub fn leave_chat_via_ax(_chat_display_name: &str) -> Result<()> {
+        Err(anyhow!(
+            "local-leave-chat (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn block_channel_via_ax(_name: &str) -> Result<()> {
+        Err(anyhow!(
+            "ax-friend --block (AX automation) is only supported on macOS"
+        ))
+    }
+
     pub fn export_via_ax(_chat_display_name: &str) -> Result<std::path::PathBuf> {
         Err(anyhow!(
             "ax-export (AX automation) is only supported on macOS"
@@ -9097,11 +9295,11 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
-    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax,
-    open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
-    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
-    ChatListRow,
+    assign_kakaotalk_to_all_spaces, block_channel_via_ax, delete_via_ax, diagnose, edit_via_ax,
+    export_via_ax, friend_via_ax, launch_kakaotalk_in_background, leave_chat_via_ax, login_via_ax,
+    mark_read_via_ax, open_friend_chat_via_ax, react_via_ax, read_via_ax, rename_chat_via_ax,
+    reply_via_ax, scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified,
+    BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must
