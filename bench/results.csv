@@ -44,3 +44,12 @@ version,date,command,ms
 1.17.0,2026-11-08,ax-chats-unread,25650
 1.17.0,2026-11-08,ax-export,4250
 1.17.0,2026-11-08,ax-friends-birthdays,709
+1.18.0,2026-11-08,ax-read,433
+1.18.0,2026-11-08,ax-read-expand,1097
+1.18.0,2026-11-08,local-send,680
+1.18.0,2026-11-08,local-edit,3617
+1.18.0,2026-11-08,local-delete,4914
+1.18.0,2026-11-08,ax-chats-unread,23671
+1.18.0,2026-11-08,ax-export,4240
+1.18.0,2026-11-08,ax-friends-birthdays,569
+1.18.0,2026-11-08,ax-friends-birthdays-favorites,1412

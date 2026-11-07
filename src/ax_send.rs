@@ -7123,7 +7123,10 @@ end run
     /// read-only, each with KakaoTalk's day label as `status` ("오늘 11월 8일",
     /// "어제 11월 7일"; 26.8, measured 2026-11-08). KakaoTalk shows only
     /// birthdays around today there, and no header at all when there are none.
-    pub fn birthday_friends() -> Result<Vec<FriendRow>> {
+    /// `favorites_only` keeps those also under 즐겨찾는 친구.
+    pub fn birthday_friends(favorites_only: bool) -> Result<Vec<FriendRow>> {
+        const BIRTHDAYS: &str = "생일인 친구";
+        const FAVORITES: &str = "즐겨찾는 친구";
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
         let app = bounded_application(pid)?;
@@ -7143,63 +7146,97 @@ end run
                     "the friends tab shows no list",
                 )
             })?;
-        let (header, mut friends) = birthday_section(&outline);
-        if let (Some(header), true) = (header, friends.is_empty()) {
-            // Folded (the header's only button toggles it): unfold it for
-            // the read, then fold it back.
-            let toggle = |header: &AXUIElement| {
-                snapshot(header)
-                    .ok()
-                    .and_then(|node| node.find_first("AXButton").map(|b| b.element.clone()))
-                    .map(|button| button.perform_action(&CFString::new(kAXPressAction)))
+        // Both sections sit above 친구 (the long one), so the walk stops there.
+        let (wanted, stop): (&[&str], &[&str]) = if favorites_only {
+            (&[BIRTHDAYS, FAVORITES], &["친구"])
+        } else {
+            (&[BIRTHDAYS], &[FAVORITES, "친구"])
+        };
+        let mut read = friend_sections(&outline, stop);
+        let folded: Vec<String> = read
+            .iter()
+            .filter(|s| wanted.contains(&s.title.as_str()) && s.friends.is_empty())
+            .map(|s| s.title.clone())
+            .collect();
+        if !folded.is_empty() {
+            // A folded section's header keeps its only button, which toggles
+            // it: unfold for the read, then fold back.
+            let toggle = |read: &[FriendSection]| {
+                for section in read.iter().filter(|s| folded.contains(&s.title)) {
+                    if let Some(button) = snapshot(&section.header)
+                        .ok()
+                        .and_then(|node| node.find_first("AXButton").map(|b| b.element.clone()))
+                    {
+                        let _ = button.perform_action(&CFString::new(kAXPressAction));
+                    }
+                }
             };
-            toggle(&header);
+            toggle(&read);
             sleep(Duration::from_millis(300));
-            let (header, unfolded) = birthday_section(&outline);
-            friends = unfolded;
-            if let Some(header) = header {
-                toggle(&header);
-            }
-            if friends.is_empty() {
+            read = friend_sections(&outline, stop);
+            toggle(&read);
+            if let Some(empty) = read
+                .iter()
+                .find(|s| folded.contains(&s.title) && s.friends.is_empty())
+            {
                 return Err(coded(
                     ErrorCode::ChatListUnavailable,
-                    "the 생일인 친구 section is folded in KakaoTalk's friends tab and did not unfold",
+                    format!(
+                        "the {} section is folded in KakaoTalk's friends tab and did not unfold",
+                        empty.title
+                    ),
                 ));
             }
         }
         drop(tab);
+        let section = |title: &str| read.iter().find(|s| s.title == title).map(|s| &s.friends);
+        let mut friends = section(BIRTHDAYS).cloned().unwrap_or_default();
+        if favorites_only {
+            let favorites = section(FAVORITES).cloned().unwrap_or_default();
+            friends.retain(|f| favorites.iter().any(|fav| fav.name == f.name));
+        }
         Ok(friends)
     }
 
-    /// The 생일인 친구 header row and the friend rows under it. The section
-    /// sits above 즐겨찾는 친구 and 친구 (the long ones), so the walk reads a
-    /// dozen rows, not the whole list.
-    fn birthday_section(outline: &AXUIElement) -> (Option<AXUIElement>, Vec<FriendRow>) {
+    /// One friends-tab section: its header row's title, the header row
+    /// (whose only button folds it), and the friend rows under it.
+    struct FriendSection {
+        title: String,
+        header: AXUIElement,
+        friends: Vec<FriendRow>,
+    }
+
+    /// The friends tab's sections from the top, read row by row until a
+    /// header titled one of `stop` (the long sections are never walked).
+    fn friend_sections(outline: &AXUIElement, stop: &[&str]) -> Vec<FriendSection> {
         let rows = copy_attributes(outline, &["AXRows"])
             .map(|values| children_in(&values, 0))
             .unwrap_or_default();
-        let (mut header, mut friends) = (None, Vec::new());
+        let mut sections: Vec<FriendSection> = Vec::new();
         for row in rows {
             if let Some(friend) = friend_row(&row) {
-                if header.is_some() {
-                    friends.push(friend);
+                if let Some(section) = sections.last_mut() {
+                    section.friends.push(friend);
                 }
                 continue;
             }
-            if header.is_some() {
+            let title = snapshot(&row)
+                .ok()
+                .and_then(|node| {
+                    node.find_first("AXStaticText")
+                        .and_then(|t| t.value.clone())
+                })
+                .unwrap_or_default();
+            if stop.contains(&title.as_str()) {
                 break;
             }
-            let title = snapshot(&row).ok().and_then(|node| {
-                node.find_first("AXStaticText")
-                    .and_then(|t| t.value.clone())
+            sections.push(FriendSection {
+                title,
+                header: row,
+                friends: Vec::new(),
             });
-            match title.as_deref() {
-                Some("생일인 친구") => header = Some(row),
-                Some("즐겨찾는 친구" | "친구") => break,
-                _ => {}
-            }
         }
-        (header, friends)
+        sections
     }
 
     /// The 친구 정보 popover, which hangs off the friend row's name text
@@ -9276,7 +9313,7 @@ mod stub {
         ))
     }
 
-    pub fn birthday_friends() -> Result<Vec<FriendRow>> {
+    pub fn birthday_friends(_favorites_only: bool) -> Result<Vec<FriendRow>> {
         Err(anyhow!(
             "ax-friends (AX automation) is only supported on macOS"
         ))
