@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] - 2026-11-07
+
+### Fixed
+- **A file or photo you sent is recognised as yours in a wide chat window.** Its direction came from whether its clock sat left of the window's center, and a chat window widened past about 500 px moves the clock of a right-aligned card past it: `local-send-file` then waited for an upload it could not see, and `ax-read` labelled your file as received. The clock is now compared with the card itself (the photo, or the file's name, size and buttons), on whose outer side it always sits.
+
 ## [1.14.0] - 2026-11-07
 
 ### Added
