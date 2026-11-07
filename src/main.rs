@@ -107,7 +107,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "AX: send, reply, edit or delete in a chat outside [safety] allowed_send_chats without device-owner authentication (exact names only; same-name chats still refuse)"
+        help = "AX: send, reply, edit or delete in a chat outside [safety] allowed_send_chats without device-owner authentication; needs [safety] allow_skip_allowlist = true (exact names only; same-name chats still refuse)"
     )]
     dangerously_skip_allowlist: bool,
     #[command(subcommand)]
@@ -943,6 +943,17 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     let config = load_config()?;
+    if cli.dangerously_skip_allowlist && !config.safety.allow_skip_allowlist {
+        return Err(error::coded(
+            error::ErrorCode::ChatNotAllowed,
+            "--dangerously-skip-allowlist is disabled: nothing was done.\n\
+             It acts in chats outside allowed_send_chats without device-owner\n\
+             authentication, so only the person at this Mac turns it on, in\n\
+             ~/.config/openkakao/config.toml:\n\n\
+             [safety]\n\
+             allow_skip_allowlist = true",
+        ));
+    }
     openkakao_cli::human_auth::set_device_owner_auth_grace(
         config.safety.device_owner_auth_grace_secs,
     );

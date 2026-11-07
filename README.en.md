@@ -204,7 +204,7 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/openkakao-cli
 
 - **Fast**: 0.4 s per verified send, 0.2 s per read, about 100× faster than v1.9
 - **Stays off the paths behind reported bans**: no server login or LOCO traffic, only the official app is driven
-- **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID (`--dangerously-skip-allowlist` skips it); same-name chats are never guessed (`--pick`)
+- **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID (`--dangerously-skip-allowlist` skips it once the human sets `[safety] allow_skip_allowlist = true`); same-name chats are never guessed (`--pick`)
 - **Chat card**: before acting, it prints the member count, recent senders and last activity, plus the 3 newest messages for a chat outside the allowlist
 - **Signature**: messages end with `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`; change it with `[send] signature`, drop it with `--no-prefix`
 - **Remote recovery**: `ax-login` (keychain), and `disposition` in every `--json` error (whether a retry could send twice)

@@ -40,18 +40,22 @@ pub fn cmd_ax_read(opts: AxReadOptions) -> Result<()> {
     } else if messages.is_empty() {
         println!("No visible messages found in chat \"{chat_name}\".");
     } else {
+        // Other people's names and messages can carry terminal escapes.
+        use crate::util::escape_terminal_text as esc;
         if let Some(members) = view.members {
-            println!("{chat_name} · {members} members\n");
+            println!("{} · {members} members\n", esc(chat_name));
         }
         for m in messages {
             let who = match (&m.sender, m.outgoing) {
                 (_, true) => "me: ".to_string(),
-                (Some(sender), false) => format!("{sender}: "),
+                (Some(sender), false) => format!("{}: ", esc(sender)),
                 (None, false) => String::new(),
             };
+            let text: Vec<String> = m.text.lines().map(esc).collect();
+            let text = text.join("\n");
             match &m.time {
-                Some(t) => println!("[{t}] {who}{}", m.text),
-                None => println!("{who}{}", m.text),
+                Some(t) => println!("[{}] {who}{text}", esc(t)),
+                None => println!("{who}{text}"),
             }
         }
         println!(

@@ -47,7 +47,7 @@ Chats are matched by their **exact display name** (the window title). The memo c
 
 1. `allow_ax_send = true` and the chat's exact name in `allowed_send_chats` (`init --allow-chat` does both). Do not add a chat without the user's intent.
 2. The chat window open on the active Space, or `--open-if-needed`.
-3. An allowlisted chat needs no per-send prompt: the allowlist is the human's standing approval. A chat outside it is flagged `⚠ NOT in [safety] allowed_send_chats` and needs a macOS device-owner prompt (Touch ID or password) on that Mac for every send, reply, edit and delete; a declined prompt is `chat_not_allowed`. `-y` skips only the terminal confirmation. `--dangerously-skip-allowlist` skips the prompt (never `--pick`'s): add it only when the user asked for it.
+3. An allowlisted chat needs no per-send prompt: the allowlist is the human's standing approval. A chat outside it is flagged `⚠ NOT in [safety] allowed_send_chats` and needs a macOS device-owner prompt (Touch ID or password) on that Mac for every send, reply, edit and delete; a declined prompt is `chat_not_allowed`. `-y` skips only the terminal confirmation. `--dangerously-skip-allowlist` skips the prompt (never `--pick`'s) where the person set `[safety] allow_skip_allowlist = true`: add the flag only when the user asked for it, and never set that key yourself.
 4. Before the first action in a chat, above all one outside the allowlist, tell the user which chat it is: `ax-read "<chat>" -n 5 --json` gives its member count, recent senders and when it was last active. Each command also prints this card to stderr before acting.
 
 ## Reading results
@@ -106,7 +106,7 @@ AX lists only the windows of the active Space. Two ways to live with it:
 
 ## Guardrails
 
-- Never add `--dangerously-skip-allowlist` on your own.
+- Never add `--dangerously-skip-allowlist` or `allow_skip_allowlist` on your own.
 - Test on the memo chat first. Send to, edit or delete in other people's chats only when the user explicitly says so, with the exact text they approved. Keep `allowed_send_chats` tight and preview with `--dry-run`.
 - On `delivery_uncertain`, read the chat and report; a second attempt duplicates the message.
 - Never post the Escape key to KakaoTalk (it closes the chat window and the main window). Never raise KakaoTalk or post keys yourself; the CLI's default paths do not need to.

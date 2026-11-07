@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A chat card before every send, reply, edit and delete**: the chat's member count, recent senders and last activity on stderr, plus its three newest messages when the chat is outside `allowed_send_chats`, so the person approving recognises the chat.
 - `ax-read --json` gives `members` and each message's `sender` and `outgoing`.
 - `chat_not_found` names chats whose names differ only in spacing or case, with their last message, and opens none of them. KakaoTalk's search keeps spaces, so a name with spaces is searched again without them.
-- **`--dangerously-skip-allowlist`** acts in a chat outside `allowed_send_chats` without device-owner authentication. Exact names, the same-name refusal and `--pick`'s prompt stay.
+- **`--dangerously-skip-allowlist`** acts in a chat outside `allowed_send_chats` without device-owner authentication, once the person at the Mac sets `[safety] allow_skip_allowlist = true` (off by default, so the flag alone never bypasses it). Exact names, the same-name refusal and `--pick`'s prompt stay.
+
+### Security
+- `ax-read`'s text output escapes terminal control characters in senders, times and messages.
 
 ### Changed
 - **The outgoing marker is a signature line under the message**: `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` instead of `🤖 [Sent via openkakao]` before it. `[send] signature` changes the text; `--no-prefix` (alias `--no-signature`), `signature = ""` and `default_prefix = false` drop it.
