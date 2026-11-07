@@ -11,6 +11,19 @@ description: Release notes for OpenKakao.
 
 This page highlights major releases. Every release, including v1.5 through v1.10, is in [`CHANGELOG.md`](https://github.com/JungHoonGhae/openkakao-cli/blob/main/CHANGELOG.md).
 
+## v1.14.0
+
+**Back up, search, react, and write like the user.**
+
+- `ax-export` backs up a chat's whole history through KakaoTalk's own 텍스트 파일로 저장; `ax-search` finds old messages in it.
+- `ax-read --expand` reads messages folded behind 전체보기.
+- `ax-friends` / `ax-friend`: find friends, read and set the private memo, rename (device-owner authentication).
+- `local-react` adds KakaoTalk reactions; `local-rename-chat` renames a chat for you.
+- `style` learns the user's tone per chat so agents can match it.
+- `ax-chats --unread` and `local-mark-read` clear years of ad-channel backlog without opening a chat.
+- An invisible watermark marks tool-sent messages; `bench/run.sh` records release timings.
+- Opening 채팅방 설정 is 1.4 s faster.
+
 ## v1.13.0
 
 **Know which chat you are about to write to.**

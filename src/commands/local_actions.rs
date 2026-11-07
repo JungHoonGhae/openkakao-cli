@@ -80,6 +80,13 @@ pub fn cmd_local_reply(opts: BubbleActionOptions) -> Result<()> {
     })
 }
 
+/// `local-react`: `text` is the reaction's name (사랑, 엄지척, 체크, ...).
+pub fn cmd_local_react(opts: BubbleActionOptions) -> Result<()> {
+    run("react", opts, |chat, target, reaction, dry_run| {
+        ax_send::react_via_ax(chat, target, reaction, dry_run)
+    })
+}
+
 pub fn cmd_local_edit(opts: BubbleActionOptions) -> Result<()> {
     run("edit", opts, |chat, target, text, dry_run| {
         let BubbleTarget::Text(old) = target else {

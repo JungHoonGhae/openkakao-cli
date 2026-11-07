@@ -61,6 +61,9 @@ pub struct AxMessage {
 #[derive(Debug, Clone, Default)]
 pub struct ChatView {
     pub members: Option<u32>,
+    /// KakaoTalk's chat id as retained notifications suggest it (see
+    /// `notif_watch::resolve_chat_id`): for display only, never for approval.
+    pub chat_id: Option<i64>,
     pub messages: Vec<AxMessage>,
 }
 
@@ -112,7 +115,13 @@ fn same_but_spacing(name: &str, target: &str) -> bool {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn chat_card(name: &str, view: &ChatView, lines: usize) -> String {
     use crate::util::{escape_terminal_text as esc, truncate};
-    let mut facts = vec![format!("chat '{}'", esc(name))];
+    let mut facts = vec![match view.chat_id {
+        Some(id) => format!(
+            "chat '{}' (id {id} per notifications, unverified)",
+            esc(name)
+        ),
+        None => format!("chat '{}'", esc(name)),
+    }];
     if let Some(members) = view.members {
         facts.push(format!("{members} members"));
     }
@@ -221,6 +230,18 @@ pub(crate) fn picked_row(
     matches.nth(pick?.checked_sub(1)?)
 }
 
+/// The same message text, whether or not it ends with openkakao's invisible
+/// watermark (`--match` is written without it).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn same_text(bubble: &str, text: &str) -> bool {
+    let bare = |t: &str| {
+        t.strip_suffix(crate::util::WATERMARK)
+            .unwrap_or(t)
+            .to_string()
+    };
+    bare(bubble) == bare(text)
+}
+
 /// KakaoTalk folds a long message behind 전체보기: the bubble's AX text is
 /// the first 500 UTF-16 units and `…` (26.8, measured 2026-11-07). The floor
 /// keeps a short bubble that happens to end in `…` from matching.
@@ -232,11 +253,16 @@ const FOLDED_BUBBLE_MIN_UTF16: usize = 400;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn bubble_shows(bubble: &str, sent: &str) -> bool {
     bubble == sent
-        || bubble.strip_suffix('…').is_some_and(|prefix| {
-            prefix.encode_utf16().count() >= FOLDED_BUBBLE_MIN_UTF16
-                && sent.len() > prefix.len()
-                && sent.starts_with(prefix)
-        })
+        || folded_prefix(bubble)
+            .is_some_and(|prefix| sent.len() > prefix.len() && sent.starts_with(prefix))
+}
+
+/// The visible part of a bubble KakaoTalk folded behind 전체보기.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn folded_prefix(bubble: &str) -> Option<&str> {
+    bubble
+        .strip_suffix('…')
+        .filter(|prefix| prefix.encode_utf16().count() >= FOLDED_BUBBLE_MIN_UTF16)
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -920,7 +946,7 @@ fn pick_bubble(bubbles: &[(String, bool)], target: &BubbleTarget, own_only: bool
         BubbleTarget::Text(text) => {
             let matching: Vec<usize> = indices
                 .into_iter()
-                .filter(|&index| bubbles[index].0 == *text)
+                .filter(|&index| same_text(&bubbles[index].0, text))
                 .collect();
             match matching.as_slice() {
                 [index] => BubblePick::Found(*index),
@@ -979,7 +1005,7 @@ fn edit_verified(
 ) -> bool {
     let outgoing_with = |rows: &[(String, bool, bool)], text: &str| {
         rows.iter()
-            .filter(|(body, outgoing, _)| *outgoing && body == text)
+            .filter(|(body, outgoing, _)| *outgoing && same_text(body, text))
             .count()
     };
     let edited_now = after
@@ -1057,7 +1083,7 @@ fn delete_verified(
 ) -> bool {
     let count = |rows: &[(String, bool)]| {
         rows.iter()
-            .filter(|(body, from_me)| *from_me == outgoing && body == text)
+            .filter(|(body, from_me)| *from_me == outgoing && same_text(body, text))
             .count()
     };
     count(after) + 1 == count(before)
@@ -1902,6 +1928,7 @@ mod match_tests {
 
         let view = ChatView {
             members: Some(7),
+            chat_id: None,
             messages,
         };
         assert_eq!(
@@ -3356,10 +3383,21 @@ function run(argv) {
         snap: &AxNode,
         name: &str,
     ) -> Option<(ChatSearch, ChatRows)> {
+        filter_list(window, snap, name, "AXTable")
+    }
+
+    /// [`filter_chat_list`] for the list with `list_role`: the chat list's
+    /// `AXTable` or the friends tab's `AXOutline` (same 검색 button).
+    fn filter_list(
+        window: &AXUIElement,
+        snap: &AxNode,
+        name: &str,
+        list_role: &str,
+    ) -> Option<(ChatSearch, ChatRows)> {
         if snap.find_first("AXTextField").is_some() {
             return None;
         }
-        let table = |snap: &AxNode| snap.find_first("AXTable").map(|t| t.element.clone());
+        let table = |snap: &AxNode| snap.find_first(list_role).map(|t| t.element.clone());
         let before = table_row_count(&table(snap)?)?;
         search_button(window)?
             .perform_action(&CFString::new(kAXPressAction))
@@ -3789,7 +3827,15 @@ end run
         }
         // AXShowMenu can report an error (e.g. a timeout) after opening the
         // menu anyway, so look for it regardless; the caller then closes it.
-        if let Err(error) = element.perform_action(&CFString::new("AXShowMenu")) {
+        let shown = Instant::now();
+        let result = element.perform_action(&CFString::new("AXShowMenu"));
+        if crate::util::debug_enabled() {
+            eprintln!(
+                "[ax] AXShowMenu returned in {:.1} ms",
+                shown.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        if let Err(error) = result {
             if crate::util::debug_enabled() {
                 eprintln!("[ax] AXShowMenu reported {error:?}; still looking for the menu");
             }
@@ -3813,7 +3859,7 @@ end run
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            sleep(Duration::from_millis(100));
+            sleep(Duration::from_millis(30));
         }
     }
 
@@ -3863,6 +3909,17 @@ end run
     /// through to keys or clicks: a missing menu or item is reported, and a
     /// found menu is always closed with `AXCancel` unless its item was pressed.
     fn open_row_via_context_menu(app: &AXUIElement, row: &AXUIElement) -> Result<()> {
+        press_row_menu_item(app, row, OPEN_CHAT_MENU_TITLES, "채팅방 열기")
+    }
+
+    /// Press one item of a chat-list row's context menu (`채팅방 열기`,
+    /// `읽음 처리`), never keys or clicks; a found menu is always closed.
+    fn press_row_menu_item(
+        app: &AXUIElement,
+        row: &AXUIElement,
+        titles: &[&str],
+        label: &str,
+    ) -> Result<()> {
         // KakaoTalk 26.9 exposes AXShowMenu on the row's cell.
         let target = row
             .children()
@@ -3891,7 +3948,7 @@ end run
             .filter(|(_, title)| {
                 title
                     .as_deref()
-                    .is_some_and(|title| OPEN_CHAT_MENU_TITLES.contains(&title.trim()))
+                    .is_some_and(|title| titles.contains(&title.trim()))
             })
             .collect();
         let [(item, _)] = open.as_slice() else {
@@ -3904,7 +3961,7 @@ end run
             return Err(coded(
                 ErrorCode::MenuNotFound,
                 format!(
-                    "the chat-list row's context menu has no unique 채팅방 열기 item (items: {:?}){stray}",
+                    "the chat-list row's context menu has no unique {label} item (items: {:?}){stray}",
                     items
                         .iter()
                         .map(|(_, title)| title.clone())
@@ -3916,12 +3973,12 @@ end run
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
                 ErrorCode::UserActive,
-                "the mouse cursor is over the chat-list row's context menu; 채팅방 열기 was not pressed",
+                format!("the mouse cursor is over the chat-list row's context menu; {label} was not pressed"),
             ));
         }
         let pressed = item
             .perform_action(&CFString::new(kAXPressAction))
-            .map_err(|error| anyhow!("could not press 채팅방 열기: {error:?}"));
+            .map_err(|error| anyhow!("could not press {label}: {error:?}"));
         if menu_still_open(app) {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
         }
@@ -4360,6 +4417,9 @@ end run
         action: &str,
     ) -> Result<bool> {
         let picked = PICKED_DUPLICATE.get().map(String::as_str);
+        // The card's chat id is shown, never trusted: it is matched from
+        // message text, which anyone in a chat can copy.
+        let view = chat_view(window, 8).ok();
         let allowlisted = !super::needs_device_owner_auth(chat_display_name);
         let reason = super::auth_reason(allowlisted || super::skips_allowlist(), picked);
         let lines = if allowlisted && picked.is_none() {
@@ -4367,8 +4427,8 @@ end run
         } else {
             3
         };
-        if let Ok(view) = chat_view(window, 8) {
-            eprintln!("{}", super::chat_card(chat_display_name, &view, lines));
+        if let Some(view) = &view {
+            eprintln!("{}", super::chat_card(chat_display_name, view, lines));
         }
         let Some(reason) = reason else {
             return Ok(false);
@@ -4584,11 +4644,14 @@ end run
             }
             _ => t.help.clone().or_else(|| t.value.clone()),
         };
+        // A same-minute row has no clock; its first static text then carries
+        // the date in AXHelp, unless it is the sender's name (no AXHelp).
         let time = time_label(row)
             .or_else(|| {
                 (bubble.role == "AXTextArea")
                     .then(|| row.find_first("AXStaticText"))
                     .flatten()
+                    .filter(|t| t.help.is_some())
             })
             .and_then(stamp);
         Some(AxMessage {
@@ -4616,7 +4679,14 @@ end run
         texts
             .into_iter()
             .filter_map(|node| node.value.as_deref().map(str::trim))
-            .find(|value| !value.is_empty() && !super::is_clock_label(value) && *value != "수정됨")
+            // Not the clock, 수정됨, or the unread count ("1") KakaoTalk shows
+            // beside a message someone has not read yet.
+            .find(|value| {
+                !value.is_empty()
+                    && !super::is_clock_label(value)
+                    && *value != "수정됨"
+                    && !value.bytes().all(|b| b.is_ascii_digit())
+            })
             .map(str::to_string)
     }
 
@@ -4630,10 +4700,152 @@ end run
             .find_map(|button| button.title.as_deref().and_then(super::member_count))
     }
 
+    /// `ax-read --expand`: replace each message KakaoTalk folded behind
+    /// 전체보기 with its whole text. The bubble's 전체보기 button (unnamed,
+    /// as wide as the bubble, and pressable although it lists no actions)
+    /// opens a dialog with the whole message; it is read and closed with its
+    /// 닫기 버튼, without raising KakaoTalk (26.8, measured 2026-11-07). A
+    /// preview shown by two bubbles stays folded.
+    fn expand_folded(
+        app: &AXUIElement,
+        window: &AXUIElement,
+        messages: &mut [AxMessage],
+    ) -> Result<()> {
+        if !messages
+            .iter()
+            .any(|m| super::folded_prefix(&m.text).is_some())
+        {
+            return Ok(());
+        }
+        let snap = snapshot_shallow(window)?;
+        let Some(table) = snap.find_first("AXTable") else {
+            return Ok(());
+        };
+        let mut found = 0;
+        let (rows, _) = tail_rows(&table.element, |row| {
+            found += usize::from(message_row_text(row).is_some());
+            found >= messages.len()
+        })?;
+        for message in messages.iter_mut() {
+            if super::folded_prefix(&message.text).is_none() {
+                continue;
+            }
+            let same: Vec<&AxNode> = rows
+                .iter()
+                .filter(|row| message_row_text(row).is_some_and(|(text, _)| text == message.text))
+                .collect();
+            let [row] = same.as_slice() else {
+                eprintln!("note: two bubbles show the same folded preview; kept it folded");
+                continue;
+            };
+            let full = read_see_all(app, row)?;
+            if super::bubble_shows(&message.text, &full) {
+                message.text = full;
+            } else {
+                eprintln!("note: KakaoTalk's 전체보기 text does not start with the preview; kept it folded");
+            }
+        }
+        Ok(())
+    }
+
+    /// Open a folded bubble's 전체보기 dialog, read its text and close it.
+    fn read_see_all(app: &AXUIElement, row: &AxNode) -> Result<String> {
+        let mut buttons = Vec::new();
+        row.find_all("AXButton", &mut buttons);
+        let unnamed = |text: &Option<String>| text.as_deref().is_none_or(|t| t.trim().is_empty());
+        let wide: Vec<&&AxNode> = buttons
+            .iter()
+            .filter(|b| unnamed(&b.description) && unnamed(&b.title))
+            .filter(|b| b.width.is_some_and(|w| w >= 150.0))
+            .collect();
+        let [see_all] = wide.as_slice() else {
+            anyhow::bail!("the folded bubble shows no single 전체보기 button");
+        };
+        let before = app_windows(app);
+        see_all
+            .element
+            .perform_action(&CFString::new(kAXPressAction))
+            .map_err(|error| anyhow!("could not press 전체보기: {error:?}"))?;
+        let dialog = new_dialog(app, &before, OPEN_CHAT_TIMEOUT, |_| true)
+            .ok_or_else(|| anyhow!("KakaoTalk's 전체보기 dialog did not appear"))?;
+        let text = snapshot(&dialog)?
+            .find_first("AXTextArea")
+            .and_then(|t| t.value.clone());
+        close_dialog(app, &dialog, "전체보기")?;
+        text.ok_or_else(|| anyhow!("the 전체보기 dialog shows no text"))
+    }
+
+    fn app_windows(app: &AXUIElement) -> Vec<AXUIElement> {
+        app.windows()
+            .map(|list| list.iter().map(|w| (*w).clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn same_element(left: &AXUIElement, right: &AXUIElement) -> bool {
+        unsafe { CFEqual(left.as_CFTypeRef(), right.as_CFTypeRef()) != 0 }
+    }
+
+    /// A KakaoTalk dialog window that was not among `before` and passes `accept`.
+    fn new_dialog(
+        app: &AXUIElement,
+        before: &[AXUIElement],
+        timeout: Duration,
+        accept: impl Fn(&AXUIElement) -> bool,
+    ) -> Option<AXUIElement> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = app_windows(app).into_iter().find(|w| {
+                !before.iter().any(|old| same_element(old, w))
+                    && attr_as_string(w, "AXSubrole").as_deref() == Some("AXDialog")
+                    && accept(w)
+            });
+            if found.is_some() || Instant::now() >= deadline {
+                return found;
+            }
+            sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Close a dialog with its window's close button and wait until it is gone.
+    fn close_dialog(app: &AXUIElement, dialog: &AXUIElement, what: &str) -> Result<()> {
+        let close = attr_as_element(dialog, "AXCloseButton").ok_or_else(|| {
+            anyhow!("the {what} dialog has no close button; close it in KakaoTalk")
+        })?;
+        let _ = close.perform_action(&CFString::new(kAXPressAction));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app_windows(app).iter().any(|w| same_element(w, dialog)) {
+            if Instant::now() >= deadline {
+                anyhow::bail!("the {what} dialog did not close; close it in KakaoTalk");
+            }
+            sleep(Duration::from_millis(50));
+        }
+        Ok(())
+    }
+
     fn chat_view(window: &AXUIElement, count: usize) -> Result<ChatView> {
+        let messages = read_recent_messages(window, count)?;
+        // Notification Center may be unreadable (no Full Disk Access); the
+        // id then stays unknown.
+        let chat_id = window
+            .title()
+            .ok()
+            .zip(crate::commands::notif_watch::retained_messages().ok())
+            .and_then(|(title, retained)| {
+                match crate::commands::notif_watch::resolve_chat_id(
+                    &title.to_string(),
+                    &messages,
+                    &retained,
+                ) {
+                    crate::commands::notif_watch::ChatIdMatch::Found { chat_id, .. } => {
+                        Some(chat_id)
+                    }
+                    _ => None,
+                }
+            });
         Ok(ChatView {
             members: chat_members(window),
-            messages: read_recent_messages(window, count)?,
+            chat_id,
+            messages,
         })
     }
 
@@ -5724,7 +5936,7 @@ end run
     /// key derivation is stale for the installed KakaoTalk build. Only
     /// messages already rendered on screen are returned — older history
     /// requires scrolling up in KakaoTalk first.
-    pub fn read_via_ax(chat_display_name: &str, count: usize) -> Result<ChatView> {
+    pub fn read_via_ax(chat_display_name: &str, count: usize, expand: bool) -> Result<ChatView> {
         let started = Instant::now();
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
@@ -5736,11 +5948,15 @@ end run
 
         let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
         loop {
-            let view = chat_view(&chat.window, count)?;
+            let mut view = chat_view(&chat.window, count)?;
             // A window that was already open is read once; a just-opened one
             // may need a moment to render its rows.
             if chat.was_open || !view.messages.is_empty() {
                 trace(started, "messages read");
+                if expand {
+                    expand_folded(&app, &chat.window, &mut view.messages)?;
+                    trace(started, "folded messages expanded");
+                }
                 return Ok(view);
             }
             if Instant::now() >= deadline {
@@ -6166,7 +6382,23 @@ end run
         };
         let _ = state.composer.set_value(CFString::new("").as_CFType());
         if state.banner == super::ComposerMode::Unknown {
-            String::new()
+            return String::new();
+        }
+        // The reply/edit banner's own 닫기 (not the window's 닫기 버튼)
+        // leaves the mode (26.8, measured 2026-11-07).
+        if let Ok(snap) = snapshot_shallow(window) {
+            let mut buttons = Vec::new();
+            snap.find_all("AXButton", &mut buttons);
+            if let Some(close) = buttons
+                .iter()
+                .find(|b| b.description.as_deref() == Some("닫기"))
+            {
+                let _ = close.element.perform_action(&CFString::new(kAXPressAction));
+            }
+        }
+        let still = composer_state(window).map(|state| state.banner);
+        if matches!(still, Ok(super::ComposerMode::Unknown)) {
+            "; edit/reply mode was closed".to_string()
         } else {
             format!(
                 "; the {:?} banner is still showing, close it with its X in KakaoTalk (never Esc)",
@@ -6315,6 +6547,152 @@ end run
     /// `답장 메시지 입력` and a `…에게 답장` banner) **before inserting any
     /// text**, then the `AXSelectedText` + `전송` commit and the usual
     /// exact-text verification. Experimental.
+    /// `local-react`: one reaction on one bubble through its menu's 리액션,
+    /// focus-free. KakaoTalk opens its picker as a popover on the bubble's
+    /// row; each reaction is a named button (사랑, 엄지척, 체크, 웃음, 축하해,
+    /// …) and the first one of that name in 기본 is pressed (26.8, measured
+    /// 2026-11-07). The memo chat has no 리액션.
+    pub fn react_via_ax(
+        chat_display_name: &str,
+        target: &super::BubbleTarget,
+        reaction: &str,
+        dry_run: bool,
+    ) -> Result<BubbleAction> {
+        let (app, _pid, mut focus, window, _elements, bubble, _) =
+            bubble_target(chat_display_name, target, false)?;
+        let action = BubbleAction {
+            target_text: bubble.text.clone(),
+            target_outgoing: bubble.outgoing,
+        };
+        if dry_run {
+            return Ok(action);
+        }
+        clear_leftover_alerts(&window)?;
+        focus.watch();
+        require_send_approval(&window, chat_display_name, "reaction in")?;
+        let row = ancestor_row(&bubble.text_area)
+            .ok_or_else(|| anyhow!("could not find the bubble's row"))?;
+        let before = row_reactions(&row);
+        press_menu_item_or(&app, &bubble.text_area, "리액션", ErrorCode::MenuNotFound)?;
+        let deadline = Instant::now() + MENU_WAIT;
+        let picker = loop {
+            if let Some(picker) = find_popover(&row) {
+                break picker;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::MenuNotFound,
+                    "KakaoTalk's reaction picker did not open",
+                ));
+            }
+            sleep(Duration::from_millis(50));
+        };
+        let node = snapshot(&picker)?;
+        let mut sections = Vec::new();
+        node.find_all("AXList", &mut sections);
+        // 기본 first: 최근 사용 repeats some of it.
+        sections.sort_by_key(|section| section.description.as_deref() != Some("기본"));
+        let mut names = Vec::new();
+        let mut chosen = None;
+        for section in &sections {
+            let mut buttons = Vec::new();
+            section.find_all("AXButton", &mut buttons);
+            for button in buttons {
+                let Some(name) = button.description.as_deref() else {
+                    continue;
+                };
+                if chosen.is_none() && name == reaction {
+                    chosen = Some(button.element.clone());
+                }
+                if !names.contains(&name.to_string()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        let Some(chosen) = chosen else {
+            let _ = picker.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::MenuNotFound,
+                format!(
+                    "KakaoTalk has no '{reaction}' reaction (reactions: {})",
+                    names.join(", ")
+                ),
+            ));
+        };
+        if let Err(error) = chosen.perform_action(&CFString::new(kAXPressAction)) {
+            let _ = picker.perform_action(&CFString::new("AXCancel"));
+            return Err(anyhow!(
+                "could not press the '{reaction}' reaction: {error:?}"
+            ));
+        }
+        let close_picker = || {
+            if let Some(picker) = find_popover(&row) {
+                let _ = picker.perform_action(&CFString::new("AXCancel"));
+            }
+        };
+        // A bubble without reactions gains badges; one that had some shows
+        // no readable difference, and a press can then have taken back a
+        // reaction you gave before (KakaoTalk toggles).
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let after = row_reactions(&row);
+            if after > before {
+                close_picker();
+                return Ok(action);
+            }
+            if before > 0 || Instant::now() >= deadline {
+                close_picker();
+                let why = if before > 0 {
+                    "the bubble already had reactions, and KakaoTalk does not show whose they are, so this press may have added yours or taken back one you gave"
+                } else {
+                    "the bubble shows no reaction badge"
+                };
+                return Err(coded(
+                    ErrorCode::DeliveryUncertain,
+                    format!(
+                        "pressed '{reaction}', but {why}; look at the bubble before pressing again"
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    fn ancestor_row(element: &AXUIElement) -> Option<AXUIElement> {
+        let mut current = attr_as_element(element, "AXParent");
+        for _ in 0..6 {
+            let node = current?;
+            if role(&node) == "AXRow" {
+                return Some(node);
+            }
+            current = attr_as_element(&node, "AXParent");
+        }
+        None
+    }
+
+    /// The reaction badges under a bubble: its row's unnamed pressable
+    /// buttons (a badge such as ❤️ 1, and KakaoTalk's add-reaction button
+    /// once there is one). KakaoTalk names neither the reactions nor who
+    /// gave them (26.8, measured 2026-11-07).
+    fn row_reactions(row: &AXUIElement) -> usize {
+        let Ok(node) = snapshot(row) else {
+            return 0;
+        };
+        let mut buttons = Vec::new();
+        node.find_all("AXButton", &mut buttons);
+        let blank = |t: &Option<String>| t.as_deref().is_none_or(|t| t.trim().is_empty());
+        buttons
+            .iter()
+            .filter(|b| blank(&b.title) && blank(&b.description))
+            .filter(|b| {
+                b.element
+                    .action_names()
+                    .map(|actions| actions.iter().any(|a| a.to_string() == "AXPress"))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
     pub fn reply_via_ax(
         chat_display_name: &str,
         target: &super::BubbleTarget,
@@ -6438,7 +6816,8 @@ end run
         let prepared = (|| {
             let state = wait_for_mode(&window, super::ComposerMode::Edit)?;
             trace(started, "edit mode loaded");
-            if !wait_for_composer_value(&state.composer, old) {
+            // KakaoTalk preloads the bubble's own text, watermark included.
+            if !wait_for_composer_value(&state.composer, &bubble.text) {
                 return Err(coded(
                     ErrorCode::ActionUnverified,
                     "edit mode did not load exactly the original text; nothing was changed",
@@ -6569,6 +6948,889 @@ end run
     /// confirmation headed by that scope. Every pre-commit failure leaves the
     /// selection mode, so nothing is deleted; after 삭제 the bubble must be
     /// gone (or replaced by KakaoTalk's notice) or it is `delivery_uncertain`.
+    /// One friends-tab row: the name as this account shows it and the
+    /// friend's status message.
+    #[derive(Debug, Clone)]
+    pub struct FriendRow {
+        pub name: String,
+        pub status: Option<String>,
+    }
+
+    /// The friend's 정보 변경 popover: the name this account set (empty:
+    /// none), the friend's own name, and the private memo.
+    #[derive(Debug, Clone)]
+    pub struct FriendInfo {
+        pub name: String,
+        pub nickname: String,
+        pub own_name: Option<String>,
+        pub memo: String,
+    }
+
+    /// The main window on its friends tab while this lives; the chat-list
+    /// tab comes back on drop when that is where it was.
+    struct FriendsTab {
+        main: AXUIElement,
+        back_to_chats: bool,
+    }
+
+    impl Drop for FriendsTab {
+        fn drop(&mut self) {
+            if self.back_to_chats {
+                if let Some(tab) = snapshot_shallow(&self.main)
+                    .ok()
+                    .and_then(|snap| tab_button(&snap, "chatrooms"))
+                {
+                    let _ = tab.perform_action(&CFString::new(kAXPressAction));
+                }
+            }
+        }
+    }
+
+    fn tab_button(snap: &AxNode, id: &str) -> Option<AXUIElement> {
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        buttons
+            .into_iter()
+            .find(|b| attr_as_string(&b.element, "AXIdentifier").as_deref() == Some(id))
+            .map(|b| b.element.clone())
+    }
+
+    fn friends_tab(app: &AXUIElement) -> Result<(FriendsTab, AxNode)> {
+        let main = find_or_show_main_window(app)?;
+        let snap = snapshot_shallow(&main)?;
+        if snap.find_first("AXOutline").is_some() {
+            return Ok((
+                FriendsTab {
+                    main,
+                    back_to_chats: false,
+                },
+                snap,
+            ));
+        }
+        let back_to_chats = snap.find_first("AXTable").is_some();
+        let tab = tab_button(&snap, "friends").ok_or_else(|| {
+            coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's main window shows no friends tab",
+            )
+        })?;
+        let _ = tab.perform_action(&CFString::new(kAXPressAction));
+        let guard = FriendsTab {
+            main: main.clone(),
+            back_to_chats,
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let snap = snapshot_shallow(&main)?;
+            if snap.find_first("AXOutline").is_some() {
+                return Ok((guard, snap));
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ChatListUnavailable,
+                    "the friends tab did not open",
+                ));
+            }
+            sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// A friend row's cell offers AXShowMenu (채팅하기, 정보 변경, ...);
+    /// section headers ("친구 1") do not.
+    fn friend_row(row: &AXUIElement) -> Option<FriendRow> {
+        let cell = row.children().ok()?.iter().next().map(|c| (*c).clone())?;
+        let has_menu = cell
+            .action_names()
+            .map(|actions| actions.iter().any(|a| a.to_string() == "AXShowMenu"))
+            .unwrap_or(false);
+        if !has_menu {
+            return None;
+        }
+        let node = snapshot(row).ok()?;
+        let mut texts = Vec::new();
+        node.find_all("AXStaticText", &mut texts);
+        let mut values = texts
+            .iter()
+            .filter_map(|t| t.value.clone())
+            .filter(|v| !v.trim().is_empty());
+        Some(FriendRow {
+            name: values.next()?,
+            status: values.next(),
+        })
+    }
+
+    /// Friends KakaoTalk's own friends-tab search lists for `query`, read-only.
+    pub fn search_friends(query: &str) -> Result<Vec<FriendRow>> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let (tab, snap) = friends_tab(&app)?;
+        let (search, rows) = filter_list(&tab.main, &snap, query, "AXOutline").ok_or_else(|| {
+            coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's friend search did not behave as measured (is its search field already open?)",
+            )
+        })?;
+        let friends = rows.iter().filter_map(|(row, _)| friend_row(row)).collect();
+        drop(search);
+        drop(tab);
+        Ok(friends)
+    }
+
+    /// The 친구 정보 popover, which hangs off the friend row's name text
+    /// (row → cell → static text → popover; 26.8, measured 2026-11-07).
+    fn find_popover(row: &AXUIElement) -> Option<AXUIElement> {
+        fn under(element: &AXUIElement, depth: usize) -> Option<AXUIElement> {
+            let children = element.children().ok()?;
+            for child in children.iter() {
+                if role(&child) == "AXPopover" {
+                    return Some((*child).clone());
+                }
+                if depth > 0 {
+                    if let Some(found) = under(&child, depth - 1) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        under(row, 3)
+    }
+
+    fn read_friend_info(popover: &AXUIElement, name: &str) -> Result<FriendInfo> {
+        let node = snapshot(popover)?;
+        let mut areas = Vec::new();
+        node.find_all("AXTextArea", &mut areas);
+        let [nickname, memo] = areas.as_slice() else {
+            anyhow::bail!(
+                "친구 정보 shows {} text fields instead of name and memo",
+                areas.len()
+            );
+        };
+        let mut texts = Vec::new();
+        node.find_all("AXStaticText", &mut texts);
+        let own_name = texts.iter().find_map(|t| {
+            t.value
+                .as_deref()?
+                .strip_prefix("친구가 설정한 이름:")
+                .map(|n| n.trim().to_string())
+        });
+        Ok(FriendInfo {
+            name: name.to_string(),
+            nickname: nickname.value.clone().unwrap_or_default(),
+            own_name,
+            memo: memo.value.clone().unwrap_or_default(),
+        })
+    }
+
+    /// The one friend named exactly `name`, its 정보 변경 popover open. The
+    /// popover hangs off the search result row, so the search stays open
+    /// until the guards drop (search first, then the tab).
+    fn open_friend_info(
+        app: &AXUIElement,
+        name: &str,
+    ) -> Result<(FriendsTab, ChatSearch, AXUIElement, AXUIElement)> {
+        let started = Instant::now();
+        let (tab, snap) = friends_tab(app)?;
+        trace(started, "friends tab");
+        let (search, rows) = filter_list(&tab.main, &snap, name, "AXOutline").ok_or_else(|| {
+            coded(
+                ErrorCode::ChatListUnavailable,
+                "KakaoTalk's friend search did not behave as measured (is its search field already open?)",
+            )
+        })?;
+        trace(started, "friend search filtered");
+        let same: Vec<&AXUIElement> = rows
+            .iter()
+            .filter(|(row, _)| friend_row(row).is_some_and(|f| f.name == name))
+            .map(|(row, _)| row)
+            .collect();
+        let row = match same.as_slice() {
+            [row] => (*row).clone(),
+            [] => {
+                return Err(coded(
+                    ErrorCode::ChatNotFound,
+                    format!("no friend is named exactly '{name}' (ax-friends lists close names)"),
+                ))
+            }
+            many => {
+                return Err(coded(
+                    ErrorCode::ChatAmbiguous,
+                    format!(
+                        "{} friends are named '{name}'; openkakao never guesses",
+                        many.len()
+                    ),
+                ))
+            }
+        };
+        let cell = row
+            .children()
+            .ok()
+            .and_then(|c| c.iter().next().map(|c| (*c).clone()))
+            .unwrap_or_else(|| row.clone());
+        press_menu_item_or(app, &cell, "정보 변경", ErrorCode::MenuNotFound)?;
+        trace(started, "정보 변경 pressed");
+        let deadline = Instant::now() + MENU_WAIT;
+        loop {
+            if let Some(popover) = find_popover(&row) {
+                return Ok((tab, search, popover, row));
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(ErrorCode::MenuNotFound, "친구 정보 did not open"));
+            }
+            sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `ax-friend`: read a friend's 친구 정보, and with `memo` / `rename` set
+    /// them through KakaoTalk's own popover (확인), then read them back.
+    /// The popover is always closed (AXCancel, never Esc).
+    pub fn friend_via_ax(
+        name: &str,
+        memo: Option<&str>,
+        rename: Option<&str>,
+    ) -> Result<FriendInfo> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        if memo.is_some_and(|m| m.chars().count() > 200) {
+            anyhow::bail!("KakaoTalk keeps at most 200 characters of memo");
+        }
+        if rename.is_some_and(|n| n.chars().count() > 20) {
+            anyhow::bail!("KakaoTalk names have at most 20 characters");
+        }
+        // A new name can make a friend's 1:1 chat answer to an allowlisted
+        // chat name, so renaming is approved like a send to an unlisted chat.
+        if let Some(new_name) = rename {
+            if !super::skips_allowlist() {
+                openkakao_cli::human_auth::require_device_owner_auth(&format!(
+                    "Approve renaming the KakaoTalk friend ‘{}’ to ‘{}’",
+                    crate::util::escape_terminal_text(name),
+                    crate::util::escape_terminal_text(new_name)
+                ))
+                .map_err(|error| coded(ErrorCode::ChatNotAllowed, format!("{error:#}")))?;
+            }
+        }
+        let (tab, search, popover, row) = open_friend_info(&app, name)?;
+        let info = read_friend_info(&popover, name);
+        // The name the friend's 1:1 chat would take must not be an
+        // allowlisted one ("" restores the friend's own name).
+        let resulting = match rename {
+            Some("") => info.as_ref().ok().and_then(|i| i.own_name.clone()),
+            other => other.map(str::to_string),
+        };
+        if let Some(resulting) = resulting.filter(|n| !super::needs_device_owner_auth(n)) {
+            let _ = popover.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("the friend would show as '{resulting}', an allowed_send_chats name; nothing was changed"),
+            ));
+        }
+        if memo.is_none() && rename.is_none() {
+            let _ = popover.perform_action(&CFString::new("AXCancel"));
+            drop(search);
+            drop(tab);
+            return info;
+        }
+        let written = (|| -> Result<()> {
+            let node = snapshot(&popover)?;
+            let mut areas = Vec::new();
+            node.find_all("AXTextArea", &mut areas);
+            let [nickname, memo_area] = areas.as_slice() else {
+                anyhow::bail!("친구 정보 shows no name and memo fields");
+            };
+            let selected_text: AXAttribute<CFType> =
+                AXAttribute::new(&CFString::new("AXSelectedText"));
+            for (area, text) in [(nickname, rename), (memo_area, memo)] {
+                let Some(text) = text else { continue };
+                let clear = || {
+                    area.element
+                        .set_value(CFString::new("").as_CFType())
+                        .map_err(|e| anyhow!("could not clear a 친구 정보 field: {e:?}"))
+                };
+                clear()?;
+                // Only an AXSelectedText insert tells KakaoTalk the text
+                // changed (and enables 확인). To clear a field, insert a
+                // space for that, then clear the text 확인 will save.
+                let typed = if text.is_empty() { " " } else { text };
+                area.element
+                    .set_attribute(&selected_text, CFString::new(typed).as_CFType())
+                    .map_err(|e| anyhow!("could not type into 친구 정보: {e:?}"))?;
+                if text.is_empty() {
+                    clear()?;
+                }
+            }
+            let after_typing = snapshot(&popover)?;
+            let mut buttons = Vec::new();
+            after_typing.find_all("AXButton", &mut buttons);
+            let confirm = buttons
+                .iter()
+                .find(|b| b.title.as_deref() == Some("확인"))
+                .map(|b| b.element.clone())
+                .ok_or_else(|| anyhow!("친구 정보 has no 확인 button"))?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while attr_as_bool(&confirm, "AXEnabled") != Some(true) {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("KakaoTalk did not enable 확인 (nothing changed?)");
+                }
+                sleep(Duration::from_millis(50));
+            }
+            confirm
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|e| anyhow!("could not press 확인: {e:?}"))?;
+            Ok(())
+        })();
+        if let Err(error) = written {
+            let _ = popover.perform_action(&CFString::new("AXCancel"));
+            return Err(error.context("nothing was changed; the 친구 정보 popover was closed"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while find_popover(&row).is_some() && Instant::now() < deadline {
+            sleep(Duration::from_millis(50));
+        }
+        drop(search);
+        drop(tab);
+        // Read back under the name the friend now shows.
+        let shown = match rename {
+            Some("") => info
+                .ok()
+                .and_then(|i| i.own_name)
+                .unwrap_or_else(|| name.to_string()),
+            Some(new_name) => new_name.to_string(),
+            None => name.to_string(),
+        };
+        let (tab, search, popover, _) = open_friend_info(&app, &shown)?;
+        let after = read_friend_info(&popover, &shown);
+        let _ = popover.perform_action(&CFString::new("AXCancel"));
+        drop(search);
+        drop(tab);
+        let after = after?;
+        let memo_ok = memo.is_none_or(|m| after.memo == m);
+        let name_ok = rename.is_none_or(|n| after.nickname == n);
+        if !(memo_ok && name_ok) {
+            return Err(coded(
+                ErrorCode::ActionUnverified,
+                "KakaoTalk closed 친구 정보 but does not show the new values; check the friend in KakaoTalk",
+            ));
+        }
+        Ok(after)
+    }
+
+    /// The chat window's 메뉴 → 채팅방 설정 dialog, focus-free.
+    fn open_chat_settings(
+        app: &AXUIElement,
+        pid: i32,
+        window: &AXUIElement,
+    ) -> Result<AXUIElement> {
+        let started = Instant::now();
+        if !menu_windows(pid).is_empty() {
+            return Err(coded(
+                ErrorCode::UserActive,
+                "a KakaoTalk menu is already open; close it by clicking elsewhere (never Esc) and retry",
+            ));
+        }
+        let snap = snapshot_shallow(window)?;
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        let menu_buttons: Vec<_> = buttons
+            .iter()
+            .filter(|b| b.description.as_deref() == Some("메뉴"))
+            .collect();
+        let [menu_button] = menu_buttons.as_slice() else {
+            return Err(coded(
+                ErrorCode::MenuNotFound,
+                "the chat window shows no single 메뉴 button",
+            ));
+        };
+        let before = app_windows(app);
+        // KakaoTalk answers this press only after its menu closes, so the
+        // call would sit out the whole messaging timeout (1.5 s measured)
+        // with the menu already open. Wait briefly instead and look for it.
+        let _ = menu_button.element.set_messaging_timeout(0.05);
+        let _ = menu_button
+            .element
+            .perform_action(&CFString::new(kAXPressAction));
+        trace(started, "메뉴 pressed");
+        let deadline = Instant::now() + MENU_WAIT;
+        let menu = loop {
+            if let Some(menu) = menu_windows(pid).into_iter().find_map(menu_in_window) {
+                break menu;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::MenuNotFound,
+                    "the chat's 메뉴 did not appear to Accessibility in time",
+                ));
+            }
+            sleep(Duration::from_millis(30));
+        };
+        trace(started, "메뉴 found");
+        let items = menu_items(&menu);
+        let Some((settings, _)) = items
+            .iter()
+            .find(|(_, title)| title.as_deref().map(str::trim) == Some("채팅방 설정"))
+        else {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::MenuNotFound,
+                "the chat's 메뉴 has no 채팅방 설정 item",
+            ));
+        };
+        let _ = settings.perform_action(&CFString::new(kAXPressAction));
+        trace(started, "채팅방 설정 pressed");
+        if menu_still_open(app) {
+            let _ = menu.perform_action(&CFString::new("AXCancel"));
+        }
+        let has_text = |node: &AxNode, text: &str| {
+            node.any(&|n: &AxNode| n.role == "AXStaticText" && n.value.as_deref() == Some(text))
+        };
+        new_dialog(app, &before, OPEN_CHAT_TIMEOUT, |w| {
+            snapshot(w).is_ok_and(|node| has_text(&node, "채팅방 설정"))
+        })
+        .ok_or_else(|| coded(ErrorCode::MenuNotFound, "채팅방 설정 did not open"))
+    }
+
+    /// `local-rename-chat`: the name this account shows for a chat, through
+    /// 채팅방 설정 → 채팅방 정보 → 편집 → 채팅방 정보 설정 → 확인, focus-free
+    /// (26.8, measured 2026-11-07). A new name can make a chat answer to an
+    /// allowlisted name, so it always needs device-owner authentication
+    /// (`--dangerously-skip-allowlist` skips it). Verified by the chat window
+    /// taking the new title.
+    pub fn rename_chat_via_ax(chat_display_name: &str, new_name: &str) -> Result<()> {
+        if new_name.trim().is_empty() || new_name.chars().count() > 50 {
+            anyhow::bail!("a chat name has 1 to 50 characters");
+        }
+        if !super::needs_device_owner_auth(new_name) {
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("'{new_name}' is an allowed_send_chats name; renaming a chat to it would let sends reach it without approval"),
+            ));
+        }
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let mut focus = FocusGuard::new(pid);
+        let chat = open_chat(&app, chat_display_name, &mut focus)?;
+        focus.restore();
+        let window = chat.window;
+        clear_leftover_alerts(&window)?;
+        if !super::skips_allowlist() {
+            openkakao_cli::human_auth::require_device_owner_auth(&format!(
+                "Approve renaming the KakaoTalk chat ‘{}’ to ‘{}’",
+                crate::util::escape_terminal_text(chat_display_name),
+                crate::util::escape_terminal_text(new_name)
+            ))
+            .map_err(|error| coded(ErrorCode::ChatNotAllowed, format!("{error:#}")))?;
+        }
+        let dialog = open_chat_settings(&app, pid, &window)?;
+        let result = rename_in_settings(&app, &dialog, new_name);
+        let closed = close_dialog(&app, &dialog, "채팅방 설정");
+        result?;
+        closed?;
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            if find_chat_window(&app, new_name)?.is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!("KakaoTalk took the name but no chat window is titled '{new_name}' yet; check the chat"),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    fn rename_in_settings(app: &AXUIElement, dialog: &AXUIElement, new_name: &str) -> Result<()> {
+        let find_edit = |dialog: &AXUIElement| -> Result<Option<AXUIElement>> {
+            let mut buttons = Vec::new();
+            let snap = snapshot(dialog)?;
+            snap.find_all("AXButton", &mut buttons);
+            Ok(buttons
+                .into_iter()
+                .find(|b| b.title.as_deref() == Some("편집"))
+                .map(|b| b.element.clone()))
+        };
+        let mut edit = find_edit(dialog)?;
+        if edit.is_none() {
+            // 채팅방 정보 is the first of the dialog's two unnamed tabs.
+            let snap = snapshot_shallow(dialog)?;
+            let blank = |t: &Option<String>| t.as_deref().is_none_or(|t| t.trim().is_empty());
+            let mut tabs: Vec<&AxNode> = snap
+                .children
+                .iter()
+                .filter(|n| {
+                    n.role == "AXButton"
+                        && blank(&n.title)
+                        && blank(&n.description)
+                        && attr_as_string(&n.element, "AXSubrole").is_none()
+                })
+                .collect();
+            tabs.sort_by(|a, b| {
+                a.position_y
+                    .partial_cmp(&b.position_y)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some(tab) = tabs.first() {
+                let _ = tab.element.perform_action(&CFString::new(kAXPressAction));
+            }
+            let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+            while edit.is_none() && Instant::now() < deadline {
+                sleep(Duration::from_millis(100));
+                edit = find_edit(dialog)?;
+            }
+        }
+        let edit =
+            edit.ok_or_else(|| coded(ErrorCode::MenuNotFound, "채팅방 설정 shows no 편집 button"))?;
+        let before = app_windows(app);
+        let _ = edit.perform_action(&CFString::new(kAXPressAction));
+        // 채팅방 정보 설정 is a standard window, not a dialog.
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        let editor = loop {
+            let found = app_windows(app).into_iter().find(|w| {
+                !before.iter().any(|old| same_element(old, w))
+                    && snapshot(w).is_ok_and(|node| {
+                        node.any(&|n: &AxNode| n.value.as_deref() == Some("채팅방 정보 설정"))
+                    })
+            });
+            if let Some(editor) = found {
+                break editor;
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::MenuNotFound,
+                    "채팅방 정보 설정 did not open",
+                ));
+            }
+            sleep(Duration::from_millis(100));
+        };
+        let written = (|| -> Result<()> {
+            let node = snapshot(&editor)?;
+            let field = node
+                .find_first("AXTextArea")
+                .map(|n| n.element.clone())
+                .ok_or_else(|| anyhow!("채팅방 정보 설정 shows no name field"))?;
+            field
+                .set_value(CFString::new("").as_CFType())
+                .map_err(|e| anyhow!("could not clear the chat name: {e:?}"))?;
+            let selected_text: AXAttribute<CFType> =
+                AXAttribute::new(&CFString::new("AXSelectedText"));
+            field
+                .set_attribute(&selected_text, CFString::new(new_name).as_CFType())
+                .map_err(|e| anyhow!("could not type the chat name: {e:?}"))?;
+            let mut buttons = Vec::new();
+            let after = snapshot(&editor)?;
+            after.find_all("AXButton", &mut buttons);
+            let confirm = buttons
+                .iter()
+                .find(|b| b.title.as_deref() == Some("확인"))
+                .map(|b| b.element.clone())
+                .ok_or_else(|| anyhow!("채팅방 정보 설정 has no 확인 button"))?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while attr_as_bool(&confirm, "AXEnabled") != Some(true) {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("KakaoTalk did not enable 확인");
+                }
+                sleep(Duration::from_millis(50));
+            }
+            confirm
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|e| anyhow!("could not press 확인: {e:?}"))?;
+            Ok(())
+        })();
+        if written.is_err() {
+            if let Some(close) = attr_as_element(&editor, "AXCloseButton") {
+                let _ = close.perform_action(&CFString::new(kAXPressAction));
+            }
+            return written.map_err(|error| error.context("the chat name was not changed"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app_windows(app).iter().any(|w| same_element(w, &editor)) && Instant::now() < deadline
+        {
+            sleep(Duration::from_millis(50));
+        }
+        Ok(())
+    }
+
+    /// `local-mark-read`: KakaoTalk's own 읽음 처리 for one chat without
+    /// opening it, focus-free. The row is found like `--open-if-needed`
+    /// finds it (KakaoTalk's chat search, exact name, duplicates refuse or
+    /// `--pick`), so a recycled list row can never stand in for it, and
+    /// success needs the row's unread badge gone.
+    pub fn mark_read_via_ax(chat_display_name: &str) -> Result<u32> {
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let main_window = find_or_show_main_window(&app)?;
+        ensure_chatrooms_tab(&main_window, true)?;
+        // Right after another search closed, the list is still restoring and
+        // a new search would read its rows (see restored_chat_list).
+        let snap = match restored_chat_list(&main_window) {
+            Some(snap) => snap,
+            None => ensure_chatrooms_tab(&main_window, true)?,
+        };
+        let (search, rows) =
+            filter_chat_list(&main_window, &snap, chat_display_name).ok_or_else(|| {
+                coded(
+                    ErrorCode::ChatListUnavailable,
+                    "KakaoTalk's chat search did not behave as measured (is its search field already open?)",
+                )
+            })?;
+        let names: Vec<Option<String>> = rows.iter().map(|(_, name)| name.clone()).collect();
+        let row = match super::match_chat_row(&names, chat_display_name) {
+            super::ChatMatch::Found(index) => rows[index].0.clone(),
+            super::ChatMatch::NotFound => {
+                return Err(coded(
+                    ErrorCode::ChatNotFound,
+                    format!(
+                        "KakaoTalk's chat search lists no chat named exactly '{chat_display_name}'"
+                    ),
+                ))
+            }
+            super::ChatMatch::Ambiguous(count) => {
+                match super::policy()
+                    .pick
+                    .and_then(|n| super::picked_row(&names, chat_display_name, Some(n)))
+                {
+                    Some(index) => rows[index].0.clone(),
+                    None => {
+                        return Err(coded(
+                            ErrorCode::ChatAmbiguous,
+                            format!("{count} chats are named '{chat_display_name}'; choose one with --pick <N> (top to bottom)"),
+                        ))
+                    }
+                }
+            }
+        };
+        let unread = snapshot(&row)
+            .ok()
+            .and_then(|node| chat_row(&node))
+            .map_or(0, |r| r.unread);
+        if unread == 0 {
+            drop(search);
+            return Ok(0);
+        }
+        press_row_menu_item(&app, &row, &["읽음 처리", "Mark as Read"], "읽음 처리")?;
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let now = snapshot(&row).ok().and_then(|node| chat_row(&node));
+            if now
+                .as_ref()
+                .is_some_and(|r| r.unread == 0 && r.name == chat_display_name)
+            {
+                drop(search);
+                return Ok(u32::try_from(unread).unwrap_or(0));
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!(
+                        "pressed 읽음 처리 but '{chat_display_name}' still shows unread messages"
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    /// `ax-export`: the chat's whole history through KakaoTalk's own
+    /// 채팅방 설정 → 대화 내용 저장 → 텍스트 파일로 저장, focus-free: the chat
+    /// window's 메뉴 button, 채팅방 설정, the dialog's second tab, 텍스트 파일로
+    /// 저장, 저장 in the save sheet, then 확인 on "대화내용 내보내기가
+    /// 완료되었습니다.". KakaoTalk writes `<name>.csv` (Date, User, Message,
+    /// since the chat began) to the folder the save sheet shows (26.8,
+    /// measured 2026-11-07). Returns that file.
+    pub fn export_via_ax(chat_display_name: &str) -> Result<std::path::PathBuf> {
+        let started = Instant::now();
+        let pid = find_kakaotalk_pid()?;
+        ensure_ax_permission()?;
+        let app = bounded_application(pid)?;
+        let mut focus = FocusGuard::new(pid);
+        let chat = open_chat(&app, chat_display_name, &mut focus)?;
+        focus.restore();
+        let window = chat.window;
+        clear_leftover_alerts(&window)?;
+        let dialog = open_chat_settings(&app, pid, &window)?;
+        trace(started, "채팅방 설정 opened");
+        let result = save_export(&dialog);
+        // The dialog is closed whatever happened; a failure to close is
+        // reported only when the export itself worked.
+        let closed = close_dialog(&app, &dialog, "채팅방 설정");
+        let path = result?;
+        closed?;
+        trace(started, "export saved");
+        Ok(path)
+    }
+
+    /// In an open 채팅방 설정 dialog: 텍스트 파일로 저장, 저장, 확인.
+    fn save_export(dialog: &AXUIElement) -> Result<std::path::PathBuf> {
+        let started = Instant::now();
+        let find_button = |root: &AxNode, title: &str| -> Option<AXUIElement> {
+            let mut buttons = Vec::new();
+            root.find_all("AXButton", &mut buttons);
+            buttons
+                .into_iter()
+                .find(|b| b.title.as_deref() == Some(title))
+                .map(|b| b.element.clone())
+        };
+        let mut save_text = find_button(&snapshot(dialog)?, "텍스트 파일로 저장");
+        if save_text.is_none() {
+            // Its tabs are two unnamed buttons at the top; 대화 내용 저장 is
+            // on the second (the lower one).
+            let snap = snapshot_shallow(dialog)?;
+            let mut tabs: Vec<&AxNode> = snap
+                .children
+                .iter()
+                .filter(|n| {
+                    let blank =
+                        |t: &Option<String>| t.as_deref().is_none_or(|t| t.trim().is_empty());
+                    // Not the window's own close/minimize/zoom buttons.
+                    n.role == "AXButton"
+                        && blank(&n.title)
+                        && blank(&n.description)
+                        && attr_as_string(&n.element, "AXSubrole").is_none()
+                })
+                .collect();
+            tabs.sort_by(|a, b| {
+                a.position_y
+                    .partial_cmp(&b.position_y)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if crate::util::debug_enabled() {
+                eprintln!("[ax] 채팅방 설정 tabs: {}", tabs.len());
+            }
+            if let Some(tab) = tabs.get(1) {
+                let _ = tab.element.perform_action(&CFString::new(kAXPressAction));
+            }
+            let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+            while save_text.is_none() && Instant::now() < deadline {
+                sleep(Duration::from_millis(100));
+                save_text = find_button(&snapshot(dialog)?, "텍스트 파일로 저장");
+            }
+        }
+        let save_text = save_text.ok_or_else(|| {
+            coded(
+                ErrorCode::MenuNotFound,
+                "채팅방 설정 shows no 텍스트 파일로 저장 button",
+            )
+        })?;
+        trace(started, "텍스트 파일로 저장 found");
+        // Answered only once the save sheet is up; the loop below waits for it.
+        let _ = save_text.set_messaging_timeout(0.05);
+        let _ = save_text.perform_action(&CFString::new(kAXPressAction));
+        trace(started, "텍스트 파일로 저장 pressed");
+        let sheet_of = |dialog: &AXUIElement| -> Option<AXUIElement> {
+            dialog
+                .children()
+                .ok()?
+                .iter()
+                .find(|c| role(c) == "AXSheet")
+                .map(|c| (*c).clone())
+        };
+        fn by_id(root: &AxNode, id: &str) -> Option<AXUIElement> {
+            if attr_as_string(&root.element, "AXIdentifier").as_deref() == Some(id) {
+                return Some(root.element.clone());
+            }
+            root.children.iter().find_map(|child| by_id(child, id))
+        }
+        let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
+        let panel = loop {
+            if let Some(sheet) = sheet_of(dialog) {
+                if attr_as_string(&sheet, "AXIdentifier").as_deref() == Some("save-panel") {
+                    break sheet;
+                }
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("KakaoTalk's save sheet did not appear");
+            }
+            sleep(Duration::from_millis(100));
+        };
+        trace(started, "save sheet open");
+        let panel_node = snapshot(&panel)?;
+        let name = by_id(&panel_node, "saveAsNameTextField")
+            .and_then(|field| attr_as_string(&field, "AXValue"))
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| anyhow!("the save sheet shows no file name"))?;
+        let folder =
+            by_id(&panel_node, "where popup").and_then(|popup| attr_as_string(&popup, "AXValue"));
+        if name.contains('/') || name.starts_with('.') {
+            anyhow::bail!("the save sheet proposes an unexpected file name {name:?}");
+        }
+        // Only a file written after 저장 is this export, never an older one.
+        let saved_after = std::time::SystemTime::now() - Duration::from_secs(2);
+        let ok = by_id(&panel_node, "OKButton")
+            .ok_or_else(|| anyhow!("the save sheet has no 저장 button"))?;
+        let _ = ok.perform_action(&CFString::new(kAXPressAction));
+        trace(started, "저장 pressed");
+        // A long chat shows a progress sheet ("37%") before the done notice.
+        let deadline = Instant::now() + Duration::from_secs(300);
+        loop {
+            if let Some(sheet) = sheet_of(dialog) {
+                let node = snapshot(&sheet)?;
+                let mut texts = Vec::new();
+                node.find_all("AXStaticText", &mut texts);
+                let texts: Vec<String> = texts.iter().filter_map(|t| t.value.clone()).collect();
+                let confirm = find_button(&node, "확인");
+                if texts.iter().any(|t| t.contains("완료되었습니다")) {
+                    if let Some(confirm) = confirm {
+                        let _ = confirm.perform_action(&CFString::new(kAXPressAction));
+                    }
+                    break;
+                }
+                // The progress sheet ("37%", "대화 내용 내보내기 중입니다.")
+                // has no 확인; a sheet with one that is not the done notice
+                // is KakaoTalk reporting a failure.
+                if let Some(confirm) = confirm {
+                    let _ = confirm.perform_action(&CFString::new(kAXPressAction));
+                    anyhow::bail!(
+                        "KakaoTalk did not finish the export: {}",
+                        texts.join(" ").trim()
+                    );
+                }
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("KakaoTalk did not finish the export within 5 minutes");
+            }
+            sleep(Duration::from_millis(200));
+        }
+        trace(started, "export done");
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("no home directory"))?;
+        let folders: Vec<std::path::PathBuf> = match folder.as_deref() {
+            Some("다운로드" | "Downloads") => vec![home.join("Downloads")],
+            Some("데스크탑" | "바탕화면" | "Desktop") => vec![home.join("Desktop")],
+            Some("문서" | "Documents") => vec![home.join("Documents")],
+            _ => ["Downloads", "Desktop", "Documents"]
+                .iter()
+                .map(|d| home.join(d))
+                .collect(),
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(path) = folders
+                .iter()
+                .map(|dir| dir.join(format!("{name}.csv")))
+                .find(|path| {
+                    std::fs::symlink_metadata(path).is_ok_and(|meta| {
+                        meta.file_type().is_file()
+                            && meta
+                                .modified()
+                                .is_ok_and(|modified| modified >= saved_after)
+                    })
+                })
+            {
+                return Ok(path);
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "KakaoTalk saved the export as '{name}.csv' in {}, which openkakao could not find",
+                    folder.as_deref().unwrap_or("the folder its save sheet showed")
+                );
+            }
+            sleep(Duration::from_millis(200));
+        }
+    }
+
     pub fn delete_via_ax(
         chat_display_name: &str,
         text: &str,
@@ -7548,8 +8810,9 @@ end run
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax,
-    launch_kakaotalk_in_background, login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list,
+    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
     send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
@@ -7584,6 +8847,17 @@ mod stub {
         pub target_outgoing: bool,
     }
 
+    pub fn react_via_ax(
+        _chat_display_name: &str,
+        _target: &super::BubbleTarget,
+        _reaction: &str,
+        _dry_run: bool,
+    ) -> Result<BubbleAction> {
+        Err(anyhow!(
+            "local-react (AX automation) is only supported on macOS"
+        ))
+    }
+
     pub fn reply_via_ax(
         _chat_display_name: &str,
         _target: &super::BubbleTarget,
@@ -7603,6 +8877,56 @@ mod stub {
     ) -> Result<BubbleAction> {
         Err(anyhow!(
             "local-edit (AX automation) is only supported on macOS"
+        ))
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone)]
+    pub struct FriendRow {
+        pub name: String,
+        pub status: Option<String>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone)]
+    pub struct FriendInfo {
+        pub name: String,
+        pub nickname: String,
+        pub own_name: Option<String>,
+        pub memo: String,
+    }
+
+    pub fn search_friends(_query: &str) -> Result<Vec<FriendRow>> {
+        Err(anyhow!(
+            "ax-friends (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn friend_via_ax(
+        _name: &str,
+        _memo: Option<&str>,
+        _rename: Option<&str>,
+    ) -> Result<FriendInfo> {
+        Err(anyhow!(
+            "ax-friend (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn rename_chat_via_ax(_chat_display_name: &str, _new_name: &str) -> Result<()> {
+        Err(anyhow!(
+            "local-rename-chat (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn mark_read_via_ax(_chat_display_name: &str) -> Result<u32> {
+        Err(anyhow!(
+            "local-mark-read (AX automation) is only supported on macOS"
+        ))
+    }
+
+    pub fn export_via_ax(_chat_display_name: &str) -> Result<std::path::PathBuf> {
+        Err(anyhow!(
+            "ax-export (AX automation) is only supported on macOS"
         ))
     }
 
@@ -7638,7 +8962,11 @@ mod stub {
         }]
     }
 
-    pub fn read_via_ax(_chat_display_name: &str, _count: usize) -> Result<super::ChatView> {
+    pub fn read_via_ax(
+        _chat_display_name: &str,
+        _count: usize,
+        _expand: bool,
+    ) -> Result<super::ChatView> {
         Err(anyhow!(
             "ax-read (AX automation) is only supported on macOS"
         ))
@@ -7665,8 +8993,9 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax,
-    launch_kakaotalk_in_background, login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list,
+    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax, export_via_ax,
+    friend_via_ax, launch_kakaotalk_in_background, login_via_ax, mark_read_via_ax, react_via_ax,
+    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
     send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 

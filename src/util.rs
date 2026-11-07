@@ -22,11 +22,22 @@ pub fn debug_enabled() -> bool {
     std::env::var("OPENKAKAO_CLI_DEBUG").is_ok() || std::env::var("OPENKAKAO_RS_DEBUG").is_ok()
 }
 
-pub fn format_outgoing_message(message: &str, signature: Option<&str>) -> String {
-    match signature.map(str::trim) {
+/// Invisible marker at the end of every message openkakao sends (zero-width
+/// space, invisible separator, zero-width space): KakaoTalk keeps it in the
+/// bubble and in its export, so tool-sent messages stay recognisable (and
+/// out of `style` samples) when no signature is shown. `[send] watermark =
+/// false` drops it.
+pub const WATERMARK: &str = "\u{200B}\u{2063}\u{200B}";
+
+pub fn format_outgoing_message(message: &str, signature: Option<&str>, watermark: bool) -> String {
+    let mut text = match signature.map(str::trim) {
         Some(signature) if !signature.is_empty() => format!("{message}\n\n{signature}"),
         _ => message.to_string(),
+    };
+    if watermark && !text.ends_with(WATERMARK) {
+        text.push_str(WATERMARK);
     }
+    text
 }
 
 pub fn print_section_title(title: &str) {

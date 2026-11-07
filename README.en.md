@@ -206,6 +206,9 @@ openkakao-cli init --skill all   # or: npx skills add JungHoonGhae/openkakao-cli
 - **Stays off the paths behind reported bans**: no server login or LOCO traffic, only the official app is driven
 - **Human approval model**: allowlisted chats send directly; any other chat is flagged ⚠ and needs Touch ID (`--dangerously-skip-allowlist` skips it once the human sets `[safety] allow_skip_allowlist = true`); same-name chats are never guessed (`--pick`)
 - **Chat card**: before acting, it prints the member count, recent senders and last activity, plus the 3 newest messages for a chat outside the allowlist
+- **Backup and search**: `ax-export` (KakaoTalk's own export, whole history as CSV), `ax-search`, and `ax-read --expand` for folded long messages
+- **Inbox cleanup**: `ax-chats --unread` lists unread chats; `local-mark-read` clears ad channels without opening them
+- **Friends, reactions, tone**: `ax-friends`/`ax-friend` (private memo), `local-react`, `local-rename-chat`, per-chat tone samples with `style`
 - **Signature**: messages end with `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ`; change it with `[send] signature`, drop it with `--no-prefix`
 - **Remote recovery**: `ax-login` (keychain), and `disposition` in every `--json` error (whether a retry could send twice)
 - Send and read real messages **without logging in**, via `local-send`/`ax-read` (drives the KakaoTalk UI directly through the macOS Accessibility API, no server contact)

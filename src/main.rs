@@ -63,7 +63,7 @@ struct Cli {
         long,
         global = true,
         alias = "no-signature",
-        help = "Do not append the '⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ' line ([send] signature) to outgoing messages"
+        help = "Send the text exactly as given: no '⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ' line ([send] signature) and no invisible watermark"
     )]
     no_prefix: bool,
     #[arg(
@@ -632,6 +632,49 @@ enum Commands {
         #[arg(long, help = "Show the targeted bubble without acting")]
         dry_run: bool,
     },
+    /// List the chat list's rows (name, unread count, members, time,
+    /// preview), read-only; --unread keeps chats with unread messages
+    AxChats {
+        #[arg(long)]
+        unread: bool,
+    },
+    /// Mark one chat read with KakaoTalk's own 읽음 처리, without opening it
+    /// (found through KakaoTalk's chat search by exact name; --pick for
+    /// duplicates)
+    LocalMarkRead {
+        /// Exact chat names; each is marked separately
+        #[arg(required = true)]
+        chat_names: Vec<String>,
+    },
+    /// Change the name this account shows for a chat (채팅방 설정 → 편집),
+    /// focus-free; needs device-owner authentication
+    LocalRenameChat {
+        chat_name: String,
+        /// The new name (1 to 50 characters)
+        new_name: String,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// React to one message bubble with one of KakaoTalk's reactions
+    /// (사랑, 엄지척, 체크, 웃음, 놀라움, 슬픔, 축하해, 박수, ...), focus-free
+    /// through its menu's 리액션 (experimental; pressing the same one again
+    /// can take it back)
+    LocalReact {
+        chat_name: String,
+        /// The reaction's name as KakaoTalk labels it, e.g. 사랑 or 엄지척
+        #[arg(long)]
+        reaction: String,
+        /// The newest text bubble
+        #[arg(long, conflicts_with = "match_text")]
+        to_last: bool,
+        /// The bubble's whole text, exactly
+        #[arg(long = "match", required_unless_present = "to_last")]
+        match_text: Option<String>,
+        #[arg(short = 'y', long)]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Edit one of your own messages in an open chat window, focus-free (experimental)
     #[command(
         long_about = "Edit one of your own message bubbles via AX, without raising KakaoTalk \
@@ -718,6 +761,67 @@ enum Commands {
         chat_name: String,
         #[arg(short = 'n', long, default_value_t = 20)]
         count: usize,
+        /// Read the whole text of messages KakaoTalk folds behind 전체보기
+        /// (opens and closes each one's dialog, focus-free)
+        #[arg(long)]
+        expand: bool,
+    },
+    /// Back up a chat's whole history through KakaoTalk's own 텍스트 파일로
+    /// 저장 (CSV: Date, User, Message), focus-free
+    AxExport {
+        chat_name: String,
+        /// Move the export here (a file or folder; never overwrites)
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Search a chat's whole history (exports it through KakaoTalk first, or
+    /// searches an earlier export with --from)
+    AxSearch {
+        chat_name: String,
+        query: String,
+        /// Show at most this many matches, the newest ones
+        #[arg(short = 'n', long, default_value_t = 50)]
+        limit: usize,
+        /// Search this ax-export CSV instead of exporting again
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Keep the fresh export instead of removing it after the search
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Find friends through KakaoTalk's own friends-tab search (name and
+    /// status message), read-only
+    AxFriends { query: String },
+    /// Per-chat writing-style samples for agents: your own messages in one
+    /// chat (from KakaoTalk's export), kept only on this Mac
+    Style {
+        chat_name: String,
+        /// Export the chat and keep your newest 200 messages there
+        #[arg(long, conflicts_with_all = ["forget", "decline"])]
+        learn: bool,
+        /// Delete this chat's samples
+        #[arg(long, conflicts_with = "decline")]
+        forget: bool,
+        /// Remember that you do not want this chat's tone learned
+        #[arg(long)]
+        decline: bool,
+        /// Your name in this chat's export, if no message of yours is visible
+        #[arg(long)]
+        me: Option<String>,
+    },
+    /// Show a friend's 친구 정보 (private memo, own name), or set the memo and
+    /// the name this account shows for them; a rename needs device-owner
+    /// authentication
+    AxFriend {
+        name: String,
+        /// Set the private memo (only you see it; at most 200 characters; "" clears it)
+        #[arg(long)]
+        memo: Option<String>,
+        /// Set the name you see for this friend (at most 20 characters; "" restores theirs)
+        #[arg(long)]
+        rename: Option<String>,
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// Watch for incoming KakaoTalk messages via AX (no server contact,
     /// background) and fire hooks/webhooks on unread-count increases
@@ -909,10 +1013,19 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalReply { .. }
             | Commands::LocalEdit { .. }
             | Commands::LocalDelete { .. }
+            | Commands::LocalReact { .. }
+            | Commands::LocalRenameChat { .. }
+            | Commands::LocalMarkRead { .. }
+            | Commands::AxChats { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
             | Commands::AxLogin { .. }
             | Commands::AxRead { .. }
+            | Commands::AxExport { .. }
+            | Commands::AxFriends { .. }
+            | Commands::Style { .. }
+            | Commands::AxFriend { .. }
+            | Commands::AxSearch { .. }
             | Commands::AxWatch { .. }
             | Commands::NotifWatch { .. }
             | Commands::Init { .. }
@@ -992,6 +1105,8 @@ fn run(cli: Cli) -> Result<()> {
             .unwrap_or_else(|| util::DEFAULT_SIGNATURE.to_string())
     });
     let signature = signature.as_deref();
+    // --no-prefix sends the text exactly as given: no signature, no watermark.
+    let watermark = !cli.no_prefix && config.send.watermark != Some(false);
 
     // Respect NO_COLOR env var (https://no-color.org/) and --no-color flag
     if cli.no_color || std::env::var("NO_COLOR").is_ok() || json {
@@ -1122,7 +1237,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, signature);
+            let msg = format_outgoing_message(&message, signature, watermark);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would send to chat {}: \"{}\"",
@@ -1161,7 +1276,7 @@ fn run(cli: Cli) -> Result<()> {
             let memo_id = reader
                 .find_memo_chat_id()?
                 .context("Could not find memo chat (나와의 채팅) in local database")?;
-            let msg = format_outgoing_message(&message, signature);
+            let msg = format_outgoing_message(&message, signature, watermark);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would send to memo chat {}: \"{}\"",
@@ -1318,7 +1433,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, signature);
+            let msg = format_outgoing_message(&message, signature, watermark);
             if dry_run {
                 eprintln!(
                     "[dry-run] Would edit message {} in chat {}: \"{}\"",
@@ -1606,7 +1721,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         } => {
-            let msg = format_outgoing_message(&message, signature);
+            let msg = format_outgoing_message(&message, signature, watermark);
             if !dry_run {
                 require_ax_send(&config)?;
                 warn_if_not_allowlisted(&config, &chat_name);
@@ -1660,7 +1775,7 @@ fn run(cli: Cli) -> Result<()> {
                 commands::local_actions::BubbleActionOptions {
                     chat_name,
                     target,
-                    text: format_outgoing_message(&message, signature),
+                    text: format_outgoing_message(&message, signature, watermark),
                     skip_confirm: yes,
                     dry_run,
                     json,
@@ -1686,6 +1801,129 @@ fn run(cli: Cli) -> Result<()> {
                 dry_run,
                 json,
             })?
+        }
+        Commands::AxChats { unread } => {
+            let rows: Vec<_> = ax_send::scrape_chat_list()?
+                .into_iter()
+                .filter(|row| !unread || row.unread > 0)
+                .collect();
+            if json {
+                let items: Vec<_> = rows
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "name": r.name,
+                            "unread": r.unread,
+                            "members": r.members,
+                            "time": r.timestamp,
+                            "preview": r.preview,
+                        })
+                    })
+                    .collect();
+                util::output_json(&serde_json::json!({"chats": items}))?;
+            } else {
+                for r in &rows {
+                    println!(
+                        "{} · {} unread · {} · {}",
+                        util::escape_terminal_text(&r.name),
+                        r.unread,
+                        util::escape_terminal_text(&r.timestamp),
+                        util::escape_terminal_text(&util::truncate(&r.preview, 50))
+                    );
+                }
+                println!("\n{} chats", rows.len());
+            }
+        }
+        Commands::LocalMarkRead { chat_names } => {
+            require_ax_send(&config)?;
+            let mut results = Vec::new();
+            let mut failed = 0;
+            for name in &chat_names {
+                match ax_send::mark_read_via_ax(name) {
+                    Ok(cleared) => {
+                        if !json {
+                            println!(
+                                "{}: {cleared} marked read",
+                                util::escape_terminal_text(name)
+                            );
+                        }
+                        results.push(serde_json::json!({"chat_name": name, "status": "verified", "cleared": cleared}));
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        let code = error::error_code(&error).map(|c| c.as_str());
+                        if !json {
+                            eprintln!("{}: {error:#}", util::escape_terminal_text(name));
+                        }
+                        results.push(serde_json::json!({"chat_name": name, "status": "failed", "code": code, "message": format!("{error:#}")}));
+                    }
+                }
+            }
+            if json {
+                util::output_json(&serde_json::json!({"results": results}))?;
+            }
+            if failed > 0 {
+                anyhow::bail!(
+                    "{failed} of {} chats were not marked read",
+                    chat_names.len()
+                );
+            }
+        }
+        Commands::LocalRenameChat {
+            chat_name,
+            new_name,
+            yes,
+        } => {
+            require_ax_send(&config)?;
+            eprintln!(
+                "Rename KakaoTalk chat '{}' to '{}' (only you see this name)",
+                util::escape_terminal_text(&chat_name),
+                util::escape_terminal_text(&new_name)
+            );
+            if !yes {
+                eprint!("Continue?\n[y/N] ");
+                if !util::confirm()? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            ax_send::rename_chat_via_ax(&chat_name, &new_name)?;
+            if json {
+                util::output_json(&serde_json::json!({
+                    "chat_name": chat_name,
+                    "new_name": new_name,
+                    "status": "verified",
+                }))?;
+            } else {
+                println!("Renamed to '{}'.", util::escape_terminal_text(&new_name));
+            }
+        }
+        Commands::LocalReact {
+            chat_name,
+            reaction,
+            to_last,
+            match_text,
+            yes,
+            dry_run,
+        } => {
+            if !dry_run {
+                require_ax_send(&config)?;
+                warn_if_not_allowlisted(&config, &chat_name);
+            }
+            let target = match match_text {
+                Some(text) if !to_last => ax_send::BubbleTarget::Text(text),
+                _ => ax_send::BubbleTarget::Last,
+            };
+            commands::local_actions::cmd_local_react(
+                commands::local_actions::BubbleActionOptions {
+                    chat_name,
+                    target,
+                    text: reaction,
+                    skip_confirm: yes,
+                    dry_run,
+                    json,
+                },
+            )?
         }
         Commands::LocalDelete {
             chat_name,
@@ -1734,7 +1972,7 @@ fn run(cli: Cli) -> Result<()> {
                 reply_log_id,
                 idempotency_key,
             } => {
-                let message = format_outgoing_message(&message, signature);
+                let message = format_outgoing_message(&message, signature, watermark);
                 commands::safe_send::cmd_propose(commands::safe_send::ProposeOptions {
                     chat_name,
                     message,
@@ -1761,13 +1999,60 @@ fn run(cli: Cli) -> Result<()> {
             account.or_else(|| config.ax.login_account.clone()),
             json,
         )?,
-        Commands::AxRead { chat_name, count } => {
-            commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
-                chat_name,
-                count,
-                json,
-            })?
+        Commands::AxFriends { query } => commands::ax_friends::cmd_ax_friends(&query, json)?,
+        Commands::Style {
+            chat_name,
+            learn,
+            forget,
+            decline,
+            me,
+        } => commands::style::cmd_style(commands::style::StyleOptions {
+            chat_name: &chat_name,
+            learn,
+            forget,
+            decline,
+            me: me.as_deref(),
+            json,
+        })?,
+        Commands::AxFriend {
+            name,
+            memo,
+            rename,
+            yes,
+        } => commands::ax_friends::cmd_ax_friend(commands::ax_friends::AxFriendOptions {
+            name: &name,
+            memo: memo.as_deref(),
+            rename: rename.as_deref(),
+            skip_confirm: yes,
+            json,
+        })?,
+        Commands::AxExport { chat_name, output } => {
+            commands::ax_export::cmd_ax_export(&chat_name, output.as_deref(), json)?
         }
+        Commands::AxSearch {
+            chat_name,
+            query,
+            limit,
+            from,
+            keep,
+        } => commands::ax_export::cmd_ax_search(commands::ax_export::AxSearchOptions {
+            chat_name: &chat_name,
+            query: &query,
+            limit,
+            from: from.as_deref(),
+            keep,
+            json,
+        })?,
+        Commands::AxRead {
+            chat_name,
+            count,
+            expand,
+        } => commands::ax_read::cmd_ax_read(commands::ax_read::AxReadOptions {
+            chat_name,
+            count,
+            expand,
+            json,
+        })?,
         Commands::AxWatch {
             interval,
             hook_cmd,
@@ -1874,19 +2159,23 @@ mod tests {
     #[test]
     fn outgoing_messages_end_with_the_signature_line() {
         assert_eq!(
-            format_outgoing_message("hello", Some(util::DEFAULT_SIGNATURE)),
+            format_outgoing_message("hello", Some(util::DEFAULT_SIGNATURE), false),
             "hello\n\n⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ"
         );
         assert_eq!(
-            format_outgoing_message("hello", Some("— 정훈 비서")),
+            format_outgoing_message("hello", Some("— 정훈 비서"), false),
             "hello\n\n— 정훈 비서"
         );
     }
 
     #[test]
     fn outgoing_messages_can_drop_the_signature() {
-        assert_eq!(format_outgoing_message("hello", None), "hello");
-        assert_eq!(format_outgoing_message("hello", Some(" ")), "hello");
+        assert_eq!(format_outgoing_message("hello", None, false), "hello");
+        assert_eq!(format_outgoing_message("hello", Some(" "), false), "hello");
+        // The invisible marker ends every message, once.
+        let marked = format_outgoing_message("hello", None, true);
+        assert_eq!(marked, format!("hello{}", util::WATERMARK));
+        assert_eq!(format_outgoing_message(&marked, None, true), marked);
     }
 
     #[test]

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-11-07
+
+### Added
+- **`ax-read --expand`** reads messages KakaoTalk folds behind 전체보기 whole: it presses the bubble's 전체보기 (pressable although it lists no AX actions), reads the dialog and closes it, without raising KakaoTalk.
+- **`ax-export <chat> [--output <path>]`** backs up a chat's whole history through KakaoTalk's own 채팅방 설정 → 텍스트 파일로 저장 (CSV: Date, User, Message), focus-free. **`ax-search <chat> <query>`** searches that history (`--from <csv>` searches an earlier export, `--keep` keeps the fresh one).
+- **`ax-friends <query>`** finds friends through KakaoTalk's friends-tab search. **`ax-friend <name>`** shows a friend's private memo and own name; `--memo` sets the memo (only you see it) and `--rename` the name you see for them, read back after 확인. A rename needs device-owner authentication, because a new name can make a 1:1 chat answer to an allowlisted name.
+- **`local-react <chat> --match <text> | --to-last --reaction <name>`** gives one of KakaoTalk's reactions (사랑, 엄지척, 체크, 웃음, 축하해, …) through the bubble menu's 리액션, focus-free and approved like a send. KakaoTalk does not show whose reactions a bubble has and takes a repeated one back, so a bubble that already had reactions reports `delivery_uncertain`.
+- **`local-rename-chat <chat> <new name>`** changes the name only this account sees (채팅방 설정 → 편집), with device-owner authentication; verified by the window's new title. Neither it nor `ax-friend --rename` will produce an `allowed_send_chats` name.
+- **`local-mark-read <chat>...`** clears unread messages with KakaoTalk's own 읽음 처리, without opening the chat. Each row is found through KakaoTalk's chat search by exact name (duplicates refuse, `--pick`), and success needs its unread badge gone; a list row recycled by scrolling can never stand in for it. Measured: 96 channels in two runs, 328 messages.
+- **`ax-chats [--unread]`** lists the chat list's rows with unread counts, member counts, time and preview (670 rows in 12 s).
+- **An invisible watermark** (zero-width characters, kept by KakaoTalk in bubbles and exports) ends every sent message, so tool-sent messages stay recognisable without a visible signature: `ax-read --json` strips it from `text` and reports `via_openkakao`, `--match` ignores it, and `style` leaves those messages out. `[send] watermark = false` or `--no-prefix` (the text exactly as given) drops it.
+- `bench/run.sh "<memo chat>"` times the core commands and appends them to `bench/results.csv`, once per release.
+- **`style <chat> [--learn | --forget | --decline]`** keeps the user's own newest 200 messages in one chat (0600, on this Mac) for agents to match their tone there; tool-sent and media messages are left out, and the owner is recognised from the bubbles the window shows as outgoing.
+- The chat card and `ax-read --json` show the chat's KakaoTalk id when retained notifications point to exactly one. It is a label only: message text can be copied into another chat, so it never approves a send.
+
+### Fixed
+- A failed reply or edit now closes KakaoTalk's reply/edit banner with its own 닫기 instead of asking the person to click its X.
+- A message's sender is no longer the unread count ("1") KakaoTalk shows beside messages not read yet, and a same-minute row no longer shows the sender's name as its time.
+
+### Performance
+- The chat window's 메뉴 button answers AX only after its menu closes, so opening 채팅방 설정 waited out the 1.5 s messaging timeout: it now takes 0.6 s instead of 2.0 s (export 6.2 → 4.2 s, rename 3.3 → 0.9 s). Menus are polled every 30 ms.
+
 ## [1.13.0] - 2026-11-07
 
 ### Fixed
