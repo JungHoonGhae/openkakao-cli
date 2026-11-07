@@ -113,6 +113,8 @@ pub enum ErrorCode {
     MenuNotFound,
     StagingConflict,
     ComposerBusy,
+    ChatDialogOpen,
+    DeleteUnavailable,
     MessageNotFound,
     MessageAmbiguous,
     ActionUnverified,
@@ -146,6 +148,8 @@ impl ErrorCode {
             Self::MenuNotFound => "menu_not_found",
             Self::StagingConflict => "staging_conflict",
             Self::ComposerBusy => "composer_busy",
+            Self::ChatDialogOpen => "chat_dialog_open",
+            Self::DeleteUnavailable => "delete_unavailable",
             Self::MessageNotFound => "message_not_found",
             Self::MessageAmbiguous => "message_ambiguous",
             Self::ActionUnverified => "action_unverified",
@@ -235,6 +239,17 @@ impl ErrorCode {
             Self::ComposerBusy => {
                 "That chat window's composer holds a draft or a pending reply/edit. Send, clear or \
                  cancel it in KakaoTalk (the X next to its banner), then retry."
+            }
+            Self::ChatDialogOpen => {
+                "KakaoTalk shows a dialog in that chat window that asks a question (only a lone \
+                 확인/OK alert is dismissed automatically). Answer it in KakaoTalk, or with \
+                 agent-desktop when nobody is at the Mac, then retry."
+            }
+            Self::DeleteUnavailable => {
+                "KakaoTalk did not offer that delete for this message: it offers 모든 대화 상대에게서 \
+                 삭제 only for your own messages within 24 hours of sending (5 minutes before \
+                 KakaoTalk 25.7) and never in the memo chat. Use --for-me to remove it from this \
+                 Mac only, or leave it."
             }
             Self::MessageNotFound => {
                 "Only the newest ~40 rows are searched, and --match must equal the bubble's whole \

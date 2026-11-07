@@ -37,6 +37,7 @@
 - **보내고 끝이 아닙니다.** 0.4초 안에 입력창이 비워지고 같은 내용의 새 발신 말풍선이 생긴 것까지 확인합니다. 확인하지 못하면 `delivery_uncertain`으로 알리고 절대 자동 재시도하지 않습니다.
 - **포커스를 뺏지 않습니다.** 열린 채팅 창이면 카카오톡을 앞으로 띄우지 않고, 키보드·마우스 입력도 흉내 내지 않습니다.
 - **휴대폰만으로 운영됩니다.** 다른 기기 로그인으로 로그아웃돼도 `ax-login`이 키체인 비밀번호로 다시 로그인합니다.
+- **사진·파일은 업로드가 끝난 것까지 확인합니다.** 말풍선이 생겨도 카카오톡이 파일을 다 올려 `공유` 버튼을 띄우기 전에는 `sent`라고 하지 않습니다. 업로드가 실패하면 카카오톡이 띄운 오류 문구와 함께 `delivery_uncertain`으로 알립니다.
 
 > [!NOTE]
 > 서버 로그인(`login --save`/`login --manual`)은 최근 KakaoTalk macOS 빌드에서 대부분 동작하지 않습니다 ([#15](https://github.com/JungHoonGhae/openkakao-cli/issues/15), [#20](https://github.com/JungHoonGhae/openkakao-cli/issues/20), [#22](https://github.com/JungHoonGhae/openkakao-cli/issues/22)). **미등록 기기로 로그인을 반복 시도하지 마세요** — 카카오가 계정의 "서브 디바이스 로그인"을 차단하거나 계정을 제재할 수 있습니다(실제 피해 사례가 보고되었습니다). 로컬 SQLCipher DB(`local-chats`/`local-read`/`local-search`)도 최신 빌드에서 키 유도 공식이 어긋나 신뢰할 수 없습니다 — 읽기는 `ax-read`, 수신 감지는 `notif-watch`(알림 스트림, 창 무관·자기발신 배제) 또는 `ax-watch`를 쓰세요.
@@ -102,10 +103,12 @@ openkakao-cli ax-login --account you@example.com
 # 열린 채팅 창을 읽기 전용으로 점검 (입력창·전송 버튼·파일 버튼)
 openkakao-cli doctor --chat "채팅방 표시 이름"
 
-# (실험) 열린 채팅 창에서 답장·수정(포커스 유지). 대상 말풍선은 전체 텍스트가 정확히 같아야 함
+# (실험) 열린 채팅 창에서 답장·수정·삭제(포커스 유지). 대상 말풍선은 전체 텍스트가 정확히 같아야 함
 openkakao-cli local-reply "채팅방 표시 이름" "답장 내용" --to-last --dry-run      # 대상 말풍선만 확인
 openkakao-cli local-reply "채팅방 표시 이름" "답장 내용" --match "원문 전체" -y
 openkakao-cli local-edit "채팅방 표시 이름" --match "보낸 원문 전체" "고친 내용" -y
+openkakao-cli local-delete "채팅방 표시 이름" --match "보낸 원문 전체" --for-everyone -y   # 모든 대화 상대에게서 삭제
+openkakao-cli local-delete "채팅방 표시 이름" --match "원문 전체" --for-me -y              # 나에게서만 삭제 (이 Mac)
 
 # 4. 수신 감지 (AX) — 채팅 목록을 폴링해 안읽음이 늘면 hook/webhook 발화 (서버 접촉 없음)
 openkakao-cli ax-watch --hook-cmd 'my-script.sh'
@@ -191,7 +194,7 @@ openkakao-cli --unattended --allow-watch-side-effects watch \
 Claude Code·Codex에서 바로 쓰려면:
 
 ```bash
-openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/skills@openkakao-cli
+openkakao-cli init --skill all   # 또는: npx skills add JungHoonGhae/openkakao-cli
 ```
 
 ## 핵심
@@ -279,7 +282,7 @@ openkakao-cli safe-send cancel <intent_id>
 | `local-send-file ... --dry-run` | AX 파일 전송 미리보기 (경로·크기 검증) | 없음 |
 | `local-send-photo ... --dry-run` | AX 사진 전송 미리보기 | 없음 |
 | `doctor --chat <chat_name>` | 열린 채팅 창 점검 (입력창·`전송` 버튼·파일 버튼), 아무것도 누르지 않음 | 없음 |
-| `local-reply/local-edit ... --dry-run` | (실험) 답장·수정할 말풍선만 찾아 보여 줌 | 없음 |
+| `local-reply/local-edit/local-delete ... --dry-run` | (실험) 답장·수정·삭제할 말풍선만 찾아 보여 줌 | 없음 |
 | `safe-send propose/list` | 영속 전송 제안 생성·조회 (실제 전송 없음) | 없음 |
 
 > [!NOTE]
@@ -310,7 +313,9 @@ openkakao-cli safe-send cancel <intent_id>
 | `action_unverified` | 답장·수정 상태가 확인되지 않아 더 진행하지 않음 | 채팅 창을 확인하고 남은 배너를 X로 닫습니다(Esc 금지) |
 | `staging_conflict` | `~/Downloads`에 같은 이름의 다른 파일이 있음 | 파일을 다운로드·바탕화면·문서 최상위로 옮겨 보내거나 이름을 바꿉니다 |
 | `user_active` | `--fallback-keys` 경로에서 계속 입력 중이었음 | 잠시 손을 뗀 뒤 다시 시도하거나 `--wait-idle 0` |
-| `delivery_uncertain` | 전송했을 수도 있지만 확인하지 못함 | 카카오톡에서 직접 확인합니다. 그냥 재시도하지 마세요 |
+| `delivery_uncertain` | 전송했을 수도 있지만 확인하지 못함 (업로드 실패 포함: 말풍선에 빨간 ✕) | 카카오톡에서 직접 확인합니다. 그냥 재시도하지 마세요 |
+| `chat_dialog_open` | 채팅 창에 카카오톡이 질문하는 창을 띄워 둠 (확인 버튼 하나뿐인 알림은 자동으로 닫고 내용을 출력) | 카카오톡에서 답한 뒤 재시도. 원격이면 스킬의 agent-desktop 복구 절차 |
+| `delete_unavailable` | 카카오톡이 그 삭제 방식을 메뉴에 내주지 않음 (나와의 채팅, 남의 메시지, 24시간 지난 메시지의 전체 삭제) | 그대로 두거나 `--for-me`로 이 Mac에서만 삭제 |
 | `file_type_refused` | 카카오톡 파일 선택창이 이 형식을 회색으로 막음(`.bin`에서 확인) | `.zip`으로 압축해 보내거나 문서·이미지 형식을 고릅니다 |
 | Homebrew `untrusted tap` | Homebrew 7+ 신뢰 정책 | `brew trust --formula junghoonghae/openkakao/openkakao-cli` |
 
@@ -365,10 +370,12 @@ openkakao-cli profile-hints --app-state --app-state-diff /tmp/profile-before.jso
 
 ```bash
 openkakao-cli init --skill claude   # 또는 codex / all
-# 직접 설치: npx skills add JungHoonGhae/skills@openkakao-cli
+# 직접 설치: npx skills add JungHoonGhae/openkakao-cli
 ```
 
 `init`은 `npx`가 있으면 `npx skills add`를 쓰고, 없으면 `SKILL.md`를 `~/.claude/skills/openkakao-cli/`(또는 `~/.codex/skills/openkakao-cli/`)에 직접 내려받습니다. 이미 설치돼 있으면 그대로 두고 설치 위치만 보여 줍니다.
+
+스킬은 이 저장소의 [`skills/openkakao-cli/`](skills/openkakao-cli/)에 있어 CLI와 같은 릴리스로 갱신됩니다(예전 `JungHoonGhae/skills@openkakao-cli`에서 옮김). 카카오톡이 질문 창을 띄웠거나 업로드에 실패한 말풍선이 남아 사람이 없는 Mac에서 막혔을 때를 대비해, 스킬은 [agent-desktop](https://agent-browser.dev/desktop)(`brew install agent-desktop`)을 선택 의존성으로 안내합니다. 복구용일 뿐이고 전송·수정·삭제는 openkakao가 합니다.
 
 ## 개발
 

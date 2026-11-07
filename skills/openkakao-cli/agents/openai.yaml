@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenKakao CLI"
+  short_description: "Send text, photos and files, reply, edit, delete and read KakaoTalk on macOS without login, focus-free via Accessibility (openkakao-cli 1.12.0+), also over SSH"
+  default_prompt: "Use openkakao-cli to send and read KakaoTalk messages on macOS. Prefer the login-free AX commands local-send, local-send-file, local-send-photo, local-reply, local-edit, local-delete and ax-read (no server session, focus-free); server login is broken on recent builds. Run init once, read the JSON error codes and their disposition, send only to allowlisted chats the user named (others need a device-owner prompt on that Mac), and never retry a delivery_uncertain result blindly."

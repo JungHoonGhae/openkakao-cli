@@ -120,8 +120,10 @@ pub(crate) fn has_new_exact_outgoing_message(
 /// baseline's newest row found again (`appended_start`, see
 /// [`appended_rows_start`]), one such bubble among the rows appended after it
 /// is enough, so an older identical bubble that scrolls out of the observed
-/// tail cannot turn a real send into `delivery_uncertain`. Without the anchor
-/// the counting rule applies.
+/// tail cannot turn a real send into `delivery_uncertain`. The counting rule
+/// applies without the anchor, and also when nothing follows it: KakaoTalk
+/// keeps a failed upload's bubble pinned at the bottom and inserts new
+/// messages above it (measured 2026-11-07).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn is_verified_delivery(
     before: &[DeliveryObservation],
@@ -132,11 +134,14 @@ pub(crate) fn is_verified_delivery(
 ) -> bool {
     composer_value == Some("")
         && match appended_start {
-            Some(start) => after
-                .get(start..)
-                .unwrap_or_default()
-                .iter()
-                .any(|row| row.outgoing && row.text == target),
+            Some(start) => {
+                after
+                    .get(start..)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|row| row.outgoing && row.text == target)
+                    || has_new_exact_outgoing_message(before, after, target)
+            }
             None => has_new_exact_outgoing_message(before, after, target),
         }
 }
@@ -250,8 +255,9 @@ fn appended_rows_start<T>(
 /// Delivery evidence for an attachment. With the baseline's newest row found
 /// again (`appended_start`), only rows appended after it count, so an older
 /// row that is re-classified later (a late image or share button) cannot
-/// verify a send. Without that anchor, the counting rule applies only if the
-/// table actually gained rows.
+/// verify a send. Without that anchor, or when nothing follows it (a failed
+/// upload's bubble stays pinned below new rows), the counting rule applies
+/// only if the table actually gained rows.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn attachment_delivery_evidence(
     before: (&[AttachmentObservation], usize),
@@ -272,6 +278,11 @@ pub(crate) fn attachment_delivery_evidence(
                 .copied()
                 .find(|placeholder| {
                     outgoing().any(|row| row.placeholder.as_deref() == Some(*placeholder))
+                })
+                .or_else(|| {
+                    (after_total > before_total)
+                        .then(|| new_attachment_evidence(before_rows, after_rows, kind))
+                        .flatten()
                 })
         }
         None if after_total > before_total => {
@@ -518,6 +529,17 @@ pub(crate) struct SheetButton {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_cancel_title(title: Option<&str>) -> bool {
     title.is_some_and(|title| CANCEL_TITLES.contains(&title.trim()))
+}
+
+/// Whether a sheet over a chat window only acknowledges something: exactly
+/// one enabled button titled 확인/OK and nothing to choose, like KakaoTalk
+/// 26.8's "예상하지 못한 오류가 발생했습니다." or "파일 전송 · 전송 불가" alerts
+/// left behind by a failed upload (measured 2026-11-07). Pressing it decides
+/// nothing, so a send may dismiss it; any other sheet is a human's question.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_acknowledgement_only(buttons: &[SheetButton]) -> bool {
+    matches!(buttons, [only] if only.enabled
+        && matches!(only.title.as_deref().map(str::trim), Some("확인" | "OK")))
 }
 
 /// The attachment count in a preview send title: `1개 전송` (Korean
@@ -805,6 +827,81 @@ fn edit_verified(
     edited_now && outgoing_with(after, old) + 1 == outgoing_with(before, old)
 }
 
+/// What `local-delete` removes, named as KakaoTalk 26.8 names the bubble-menu
+/// item. KakaoTalk itself decides which of the two it offers: 모든 대화
+/// 상대에게서 삭제 only for your own messages within 24 hours of sending
+/// (KakaoTalk 25.7+, 5 minutes before) and never in the memo chat, so the menu,
+/// not a copy of that policy, is what decides (measured 2026-11-07).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeleteScope {
+    Everyone,
+    Me,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl DeleteScope {
+    pub(crate) fn menu_item(self) -> &'static str {
+        match self {
+            Self::Everyone => "모든 대화 상대에게서 삭제",
+            Self::Me => "나에게서만 삭제",
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Everyone => "everyone",
+            Self::Me => "me",
+        }
+    }
+}
+
+/// The 삭제 button of KakaoTalk's delete confirmation ("나에게서만 삭제 ·
+/// 현재 사용중인 기기에서만 삭제됩니다." 취소/삭제), only when the sheet is
+/// headed by exactly the requested scope and has one enabled 삭제.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_delete_confirm(
+    texts: &[String],
+    buttons: &[SheetButton],
+    scope: DeleteScope,
+) -> Option<usize> {
+    if !texts.iter().any(|text| text.trim() == scope.menu_item()) {
+        return None;
+    }
+    let deletes: Vec<usize> = buttons
+        .iter()
+        .enumerate()
+        .filter(|(_, button)| {
+            button.enabled && button.title.as_deref().map(str::trim) == Some("삭제")
+        })
+        .map(|(index, _)| index)
+        .collect();
+    match deletes.as_slice() {
+        [index] => Some(*index),
+        _ => None,
+    }
+}
+
+/// A delete took effect when the newest rows hold exactly one fewer bubble
+/// with the target's text and direction: removed (나에게서만) or replaced by
+/// KakaoTalk's deletion notice (모든 대화 상대에게서). If an older identical
+/// bubble enters the observed tail the counts tie, which reads as uncertain,
+/// never as a false success.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn delete_verified(
+    before: &[(String, bool)],
+    after: &[(String, bool)],
+    text: &str,
+    outgoing: bool,
+) -> bool {
+    let count = |rows: &[(String, bool)]| {
+        rows.iter()
+            .filter(|(body, from_me)| *from_me == outgoing && body == text)
+            .count()
+    };
+    count(after) + 1 == count(before)
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AxCheckStatus {
@@ -1014,6 +1111,84 @@ mod policy_tests {
     }
 
     #[test]
+    fn delete_confirmation_must_name_the_requested_scope() {
+        let texts = |heading: &str| {
+            vec![
+                heading.to_string(),
+                "현재 사용중인 기기에서만 삭제됩니다.".to_string(),
+            ]
+        };
+        let buttons = [
+            button("취소", true, false, true),
+            button("삭제", true, true, false),
+        ];
+        assert_eq!(
+            pick_delete_confirm(&texts("나에게서만 삭제"), &buttons, DeleteScope::Me),
+            Some(1)
+        );
+        // A "for me" sheet never confirms a "for everyone" request, and back.
+        assert_eq!(
+            pick_delete_confirm(&texts("나에게서만 삭제"), &buttons, DeleteScope::Everyone),
+            None
+        );
+        assert_eq!(
+            pick_delete_confirm(
+                &texts("모든 대화 상대에게서 삭제"),
+                &buttons,
+                DeleteScope::Me
+            ),
+            None
+        );
+        assert_eq!(
+            pick_delete_confirm(
+                &texts("모든 대화 상대에게서 삭제"),
+                &buttons,
+                DeleteScope::Everyone
+            ),
+            Some(1)
+        );
+        // No enabled 삭제, or two of them: refuse.
+        let disabled = [
+            button("취소", true, false, true),
+            button("삭제", false, true, false),
+        ];
+        assert_eq!(
+            pick_delete_confirm(&texts("나에게서만 삭제"), &disabled, DeleteScope::Me),
+            None
+        );
+        let two = [
+            button("삭제", true, false, false),
+            button("삭제", true, true, false),
+        ];
+        assert_eq!(
+            pick_delete_confirm(&texts("나에게서만 삭제"), &two, DeleteScope::Me),
+            None
+        );
+    }
+
+    #[test]
+    fn a_delete_needs_exactly_one_fewer_matching_bubble() {
+        let row = |text: &str, outgoing: bool| (text.to_string(), outgoing);
+        let before = vec![
+            row("지울 말", true),
+            row("지울 말", false),
+            row("다른 말", true),
+        ];
+        let removed = vec![row("지울 말", false), row("다른 말", true)];
+        assert!(delete_verified(&before, &removed, "지울 말", true));
+        let notice = vec![
+            row("메시지가 삭제되었습니다.", true),
+            row("지울 말", false),
+            row("다른 말", true),
+        ];
+        assert!(delete_verified(&before, &notice, "지울 말", true));
+        // Nothing changed, or only the incoming copy went.
+        assert!(!delete_verified(&before, &before, "지울 말", true));
+        let wrong = vec![row("지울 말", true), row("다른 말", true)];
+        assert!(!delete_verified(&before, &wrong, "지울 말", true));
+    }
+
+    #[test]
     fn an_edit_needs_the_new_text_marked_edited_and_the_old_text_gone() {
         let row = |text: &str, outgoing: bool, edited: bool| (text.to_string(), outgoing, edited);
         let before = vec![row("오타 있음", true, false), row("다른 말", false, false)];
@@ -1206,6 +1381,29 @@ mod policy_tests {
             button("전송", true, false, false),
         ];
         assert_eq!(pick_preview_send_button(&titled), Some(2));
+    }
+
+    #[test]
+    fn only_a_lone_ok_alert_counts_as_acknowledgement() {
+        assert!(is_acknowledgement_only(&[button(
+            "확인", true, true, false
+        )]));
+        assert!(is_acknowledgement_only(&[button("OK", true, false, false)]));
+        // "전송을 취소하시겠습니까?" asks a question: never answer it.
+        assert!(!is_acknowledgement_only(&[
+            button("취소", true, false, true),
+            button("확인", true, true, false),
+        ]));
+        assert!(!is_acknowledgement_only(&[button(
+            "확인", false, true, false
+        )]));
+        assert!(!is_acknowledgement_only(&[button(
+            "1개 전송",
+            true,
+            true,
+            false
+        )]));
+        assert!(!is_acknowledgement_only(&[]));
     }
 
     #[test]
@@ -1589,6 +1787,49 @@ mod match_tests {
     }
 
     #[test]
+    fn a_failed_bubble_pinned_below_new_rows_does_not_hide_a_send() {
+        let row = |text: &str| DeliveryObservation {
+            text: text.to_string(),
+            outgoing: true,
+        };
+        // The baseline's newest row is a failed photo; the new text bubble is
+        // inserted above it, so nothing follows the anchor.
+        let before = vec![row("older"), row("[사진]")];
+        let after = vec![row("older"), row("hi"), row("[사진]")];
+        assert!(is_verified_delivery(
+            &before,
+            &after,
+            Some(3),
+            "hi",
+            Some("")
+        ));
+        assert!(!is_verified_delivery(
+            &before,
+            &before,
+            Some(2),
+            "hi",
+            Some("")
+        ));
+
+        let photo = |outgoing| AttachmentObservation {
+            placeholder: Some("[사진]".to_string()),
+            outgoing,
+            mentions_filename: false,
+        };
+        let before = vec![photo(true)];
+        let after = vec![photo(true), photo(true)];
+        assert_eq!(
+            attachment_delivery_evidence((&before, 1), (&after, 2), Some(2), AttachmentKind::Photo),
+            Some("[사진]")
+        );
+        // The table did not grow: a re-read of the same rows proves nothing.
+        assert_eq!(
+            attachment_delivery_evidence((&before, 2), (&after, 2), Some(2), AttachmentKind::Photo),
+            None
+        );
+    }
+
+    #[test]
     fn photo_bubble_placeholder_verifies_only_a_new_outgoing_photo_bubble() {
         // The macOS photo-commit loop verifies with exactly this placeholder
         // (KakaoTalk renders sent images as "[사진]"), so a verified photo
@@ -1743,8 +1984,18 @@ mod imp {
             .spawn()
             .context("could not hold a display wake assertion for KakaoTalk automation")?;
         // Give powerd a bounded moment to publish KakaoTalk's AX windows when
-        // the display was asleep but the user session remained unlocked.
-        sleep(Duration::from_millis(300));
+        // the display was asleep but the user session remained unlocked. An
+        // awake display needs no wait (it cost every file send 300 ms).
+        let asleep =
+            core_graphics::display::CGDisplay::active_displays().map_or(true, |displays| {
+                displays.is_empty()
+                    || displays
+                        .iter()
+                        .any(|id| core_graphics::display::CGDisplay::new(*id).is_asleep())
+            });
+        if asleep {
+            sleep(Duration::from_millis(300));
+        }
         Ok(DisplayWakeGuard { child })
     }
 
@@ -1856,6 +2107,14 @@ mod imp {
             .ok()
             .and_then(|value| value.downcast::<CFBoolean>())
             .map(bool::from)
+    }
+
+    fn attr_as_i64(el: &AXUIElement, name: &str) -> Option<i64> {
+        let attr: AXAttribute<CFType> = AXAttribute::new(&CFString::new(name));
+        el.attribute(&attr)
+            .ok()
+            .and_then(|value| value.downcast::<core_foundation::number::CFNumber>())
+            .and_then(|number| number.to_i64())
     }
 
     fn attr_as_element(el: &AXUIElement, name: &str) -> Option<AXUIElement> {
@@ -3783,11 +4042,13 @@ end run
     /// changes KakaoTalk. An allowlisted chat is already approved; any other
     /// target needs macOS device-owner authentication, and a declined prompt
     /// is `chat_not_allowed` (nothing was sent).
-    fn require_send_approval(chat_display_name: &str, action: &str) -> Result<()> {
+    /// `Ok(true)` when the macOS prompt ran (time passed: re-read any
+    /// baseline), `Ok(false)` when the allowlist was the approval.
+    fn require_send_approval(chat_display_name: &str, action: &str) -> Result<bool> {
         let picked = PICKED_DUPLICATE.get().map(String::as_str);
         let allowlisted = !super::needs_device_owner_auth(chat_display_name);
         let Some(reason) = super::auth_reason(allowlisted, picked) else {
-            return Ok(());
+            return Ok(false);
         };
         let target =
             crate::util::escape_terminal_text(&crate::util::truncate(chat_display_name, 80));
@@ -3801,7 +4062,8 @@ end run
                 ErrorCode::ChatNotAllowed
             };
             coded(code, format!("'{chat_display_name}' ({reason}): {error:#}"))
-        })
+        })?;
+        Ok(true)
     }
 
     /// Set by `open_chat` when `--pick` chose among same-name chats (one
@@ -4223,6 +4485,75 @@ end run
     /// Press Cancel on whatever sheet the chat window shows. Used on every
     /// failure after KakaoTalk's file picker or preview opened, so nothing is
     /// left on the user's screen. Cancel can never send.
+    /// The sheet attached to the chat window, if any. Reads only the window's
+    /// direct children, so a poll costs a couple of AX calls.
+    fn window_sheet(window: &AXUIElement) -> Option<AXUIElement> {
+        let children = window.children().ok()?;
+        (0..children.len())
+            .filter_map(|index| children.get(index).map(|child| (*child).clone()))
+            .find(|child| role(child) == "AXSheet")
+    }
+
+    /// A sheet's message, its static texts joined, for errors and stderr.
+    fn sheet_text(sheet: &AXUIElement) -> String {
+        let Ok(snap) = snapshot_with(sheet, true) else {
+            return String::new();
+        };
+        let mut texts = Vec::new();
+        snap.find_all("AXStaticText", &mut texts);
+        texts
+            .iter()
+            .filter_map(|text| text.value.as_deref().map(str::trim))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    /// Before a send or edit: dismiss alerts KakaoTalk left over the chat
+    /// window that only acknowledge something (a failed upload leaves one or
+    /// two, and they block the next file picker), printing each to stderr.
+    /// Any other sheet asks a human and refuses with `chat_dialog_open`.
+    fn clear_leftover_alerts(window: &AXUIElement) -> Result<()> {
+        for _ in 0..3 {
+            let Some(sheet) = window_sheet(window) else {
+                return Ok(());
+            };
+            let text = sheet_text(&sheet);
+            let buttons = sheet_buttons(&sheet)?;
+            let facts: Vec<super::SheetButton> =
+                buttons.iter().map(|(_, facts)| facts.clone()).collect();
+            if !super::is_acknowledgement_only(&facts) {
+                return Err(coded(
+                    ErrorCode::ChatDialogOpen,
+                    format!(
+                        "KakaoTalk shows a dialog in this chat window ({text:?}); nothing was sent"
+                    ),
+                ));
+            }
+            eprintln!("Dismissing a KakaoTalk alert left in the chat window: {text:?}");
+            buttons[0]
+                .0
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|error| anyhow!("could not press the alert's 확인/OK: {error:?}"))?;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while window_sheet(window).is_some_and(|now| unsafe {
+                CFEqual(now.as_CFTypeRef(), sheet.as_CFTypeRef()) != 0
+            }) {
+                if Instant::now() >= deadline {
+                    return Err(coded(
+                        ErrorCode::ChatDialogOpen,
+                        format!("KakaoTalk's alert ({text:?}) did not close after 확인/OK; nothing was sent"),
+                    ));
+                }
+                sleep(Duration::from_millis(50));
+            }
+        }
+        Err(coded(
+            ErrorCode::ChatDialogOpen,
+            "KakaoTalk kept showing alerts in this chat window; nothing was sent",
+        ))
+    }
+
     fn cancel_sheet_best_effort(window: &AXUIElement) {
         let Ok(Some(sheet)) = find_file_picker_sheet(window) else {
             return;
@@ -4494,14 +4825,17 @@ end run
             let (sidebar, initial_list) = open_panel_outlines(&panel)?;
             // Names shown before the sidebar click: without a path popup, an
             // unchanged list may still be the previous folder's (see below).
+            // With a popup the folder is confirmed by name, so the list is not
+            // read twice (a 420-file Downloads cost 830 ms here).
+            let has_popup = panel_shows_folder(&panel, folder)?.is_some();
             let before_names: Option<Vec<Option<String>>> = match initial_list {
-                Some(list) => Some(
+                Some(list) if !has_popup => Some(
                     rows_with_label(&list, &["AXTextField"], "open panel file list (initial)")?
                         .into_iter()
                         .map(|(_, name)| name.as_deref().map(nfc))
                         .collect(),
                 ),
-                None => None,
+                _ => None,
             };
             let places = rows_with_label(
                 &sidebar,
@@ -4725,6 +5059,7 @@ end run
         let mut focus = FocusGuard::new(pid);
         open_chat(&app, chat_display_name, &mut focus)?;
         let (window, elements) = wait_for_chat_elements(&app, chat_display_name)?;
+        clear_leftover_alerts(&window)?;
         trace(started, "chat window inspected");
         attachment_observations(&elements.message_table, filename)
             .context("could not read the exact target's messages before opening the file picker")?;
@@ -4845,25 +5180,33 @@ end run
                                 start,
                                 kind,
                             ) {
-                                trace(started, &format!("delivery verified by {verified_by}"));
-                                // KakaoTalk reads the staged copy while it uploads;
-                                // remove it only once the bubble stops saying so.
-                                if let Some(staged) = staged.as_mut() {
-                                    if !wait_for_upload_to_finish(&elements.message_table) {
-                                        staged.keep = true;
-                                        eprintln!(
-                                            "KakaoTalk is still uploading after {}s; the staged copy at {} was kept, delete it once the upload finishes",
-                                            UPLOAD_FINISH_TIMEOUT.as_secs(),
-                                            staged.path.display()
-                                        );
+                                trace(started, &format!("bubble appeared ({verified_by})"));
+                                // The bubble only proves the upload started. KakaoTalk
+                                // reads the file (or its staged copy) until it ends,
+                                // so the send counts, and the copy goes, only then.
+                                let baseline_rows: Vec<AXUIElement> =
+                                    baseline.iter().map(|(row, _)| row.clone()).collect();
+                                match wait_for_upload_to_finish(
+                                    &window,
+                                    &elements.message_table,
+                                    &baseline_rows,
+                                ) {
+                                    UploadEnd::Finished => {
+                                        trace(started, "upload finished");
+                                        return Ok(super::AttachmentReceipt {
+                                            verified_by,
+                                            preview_shows_filename,
+                                            staged: staged.is_some(),
+                                        });
                                     }
-                                    trace(started, "upload finished (staged copy may go)");
+                                    UploadEnd::Failed(alert) => break format!(
+                                        "the {noun} bubble appeared, but KakaoTalk reported the upload failed ({alert:?}); its bubble shows a red ✕, which resends or cancels it in KakaoTalk"
+                                    ),
+                                    UploadEnd::Unfinished => break format!(
+                                        "the {noun} bubble appeared, but it was still uploading after {}s",
+                                        UPLOAD_FINISH_TIMEOUT.as_secs()
+                                    ),
                                 }
-                                return Ok(super::AttachmentReceipt {
-                                    verified_by,
-                                    preview_shows_filename,
-                                    staged: staged.is_some(),
-                                });
                             }
                         }
                         Err(error) => {
@@ -4899,23 +5242,76 @@ end run
         ))
     }
 
-    /// `true` once no row in the message tail shows an upload in progress,
-    /// `false` after [`UPLOAD_FINISH_TIMEOUT`] or when the tail cannot be read.
-    fn wait_for_upload_to_finish(table: &AXUIElement) -> bool {
+    /// How the newest outgoing attachment's upload ended.
+    enum UploadEnd {
+        /// The row shows its 공유 button: KakaoTalk has the whole file.
+        Finished,
+        /// KakaoTalk put an alert over the chat window, with this text.
+        Failed(String),
+        /// Still no 공유 button after [`UPLOAD_FINISH_TIMEOUT`], or the tail
+        /// could not be read.
+        Unfinished,
+    }
+
+    /// Wait until the newest outgoing attachment row finishes uploading. The
+    /// bubble appears as soon as the upload starts, but only a finished photo
+    /// or file row shows its 공유 button (and clock); a photo in flight or
+    /// failed shows neither, and no "업로드 중" label either (measured
+    /// 2026-11-07, KakaoTalk 26.8). A failed upload also raises an alert,
+    /// which is dismissed when it only acknowledges, so the window stays usable.
+    fn wait_for_upload_to_finish(
+        window: &AXUIElement,
+        table: &AXUIElement,
+        baseline: &[AXUIElement],
+    ) -> UploadEnd {
         let deadline = Instant::now() + UPLOAD_FINISH_TIMEOUT;
+        let center = table_center_x(table);
+        // A failed upload's bubble from before this send stays pinned last.
+        let new_row = |row: &AxNode| {
+            !baseline
+                .iter()
+                .any(|old| unsafe { CFEqual(old.as_CFTypeRef(), row.element.as_CFTypeRef()) != 0 })
+        };
+        let outgoing_attachment = |row: &AxNode| {
+            new_row(row)
+                && message_row_text(row).is_some_and(|(text, bubble)| {
+                    (text == PHOTO_BUBBLE_PLACEHOLDER || text == super::FILE_BUBBLE_PLACEHOLDER)
+                        && row_is_outgoing(row, bubble, center)
+                })
+        };
         loop {
+            if let Some(sheet) = window_sheet(window) {
+                let text = sheet_text(&sheet);
+                if let Err(error) = clear_leftover_alerts(window) {
+                    eprintln!("{error:#}");
+                }
+                return UploadEnd::Failed(text);
+            }
             let mut seen = 0;
-            let uploading = tail_rows(table, |_| {
+            let finished = tail_rows(table, |row| {
                 seen += 1;
-                seen >= DELIVERY_TAIL_ROWS
+                outgoing_attachment(row) || seen >= DELIVERY_TAIL_ROWS
             })
-            .map(|(rows, _)| rows.iter().any(|row| uploading_label(row).is_some()));
-            match uploading {
-                Ok(false) => return true,
-                Ok(true) if Instant::now() < deadline => sleep(Duration::from_secs(1)),
-                _ => return false,
+            .map(|(rows, _)| {
+                rows.iter()
+                    .rev()
+                    .find(|row| outgoing_attachment(row))
+                    .is_some_and(|row| has_share_button(row) && uploading_label(row).is_none())
+            });
+            match finished {
+                Ok(true) => return UploadEnd::Finished,
+                Ok(false) if Instant::now() < deadline => sleep(Duration::from_millis(250)),
+                _ => return UploadEnd::Unfinished,
             }
         }
+    }
+
+    fn has_share_button(row: &AxNode) -> bool {
+        let mut buttons = Vec::new();
+        row.find_all("AXButton", &mut buttons);
+        buttons
+            .iter()
+            .any(|button| button.description.as_deref() == Some("공유"))
     }
 
     /// KakaoTalk's attachment preview for the pasted file and its send
@@ -5013,7 +5409,8 @@ end run
         trace(started, "KakaoTalk process verified");
         let mut focus = FocusGuard::new(pid);
         open_chat(&app, chat_display_name, &mut focus)?;
-        let (_window, elements) = wait_for_chat_elements(&app, chat_display_name)?;
+        let (window, elements) = wait_for_chat_elements(&app, chat_display_name)?;
+        clear_leftover_alerts(&window)?;
         trace(started, "chat window inspected");
         let send_button = match (&elements.send_button, fallback_keys) {
             (Some(button), false) => Some(button.clone()),
@@ -5303,6 +5700,9 @@ end run
         text_area: AXUIElement,
     }
 
+    /// (text, outgoing, edited) of each bubble, chronological.
+    type BubbleRows = Vec<(String, bool, bool)>;
+
     /// The newest text bubbles of a chat, chronological.
     fn text_bubbles(table: &AXUIElement) -> Result<Vec<Bubble>> {
         let center = table_center_x(table);
@@ -5415,6 +5815,17 @@ end run
     /// cancelled whenever it is found and the item is not pressed, and a menu
     /// left showing is cancelled again.
     fn press_bubble_menu_item(app: &AXUIElement, bubble: &AXUIElement, item: &str) -> Result<()> {
+        press_menu_item_or(app, bubble, item, ErrorCode::MenuNotFound)
+    }
+
+    /// [`press_bubble_menu_item`], reporting a menu without `item` as
+    /// `missing` (a delete scope KakaoTalk does not offer is not a lookup bug).
+    fn press_menu_item_or(
+        app: &AXUIElement,
+        bubble: &AXUIElement,
+        item: &str,
+        missing: ErrorCode,
+    ) -> Result<()> {
         let Some(menu) = show_context_menu(app, bubble)? else {
             let stray = if menu_still_open(app) {
                 "; a KakaoTalk menu is showing but could not be read, click elsewhere to close it (never Esc)"
@@ -5436,12 +5847,13 @@ end run
         let [(entry, _)] = found.as_slice() else {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
-                ErrorCode::MenuNotFound,
+                missing,
                 format!(
                     "the message's context menu has no unique '{item}' item (items: {:?})",
                     items
                         .iter()
-                        .map(|(_, title)| title.clone())
+                        .filter_map(|(_, title)| title.as_deref().map(str::trim))
+                        .filter(|title| !title.is_empty())
                         .collect::<Vec<_>>()
                 ),
             ));
@@ -5484,6 +5896,7 @@ end run
         AXUIElement,
         ChatWindowElements,
         Bubble,
+        BubbleRows,
     )> {
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
@@ -5525,8 +5938,12 @@ end run
                 ))
             }
         };
+        let baseline: BubbleRows = bubbles
+            .iter()
+            .map(|bubble| (bubble.text.clone(), bubble.outgoing, bubble.edited))
+            .collect();
         let bubble = bubbles.swap_remove(index);
-        Ok((app, pid, focus, window, elements, bubble))
+        Ok((app, pid, focus, window, elements, bubble, baseline))
     }
 
     /// Reply to one bubble without raising KakaoTalk (verified on 26.9.0):
@@ -5540,7 +5957,7 @@ end run
         message: &str,
         dry_run: bool,
     ) -> Result<BubbleAction> {
-        let (app, _pid, mut focus, window, elements, bubble) =
+        let (app, _pid, mut focus, window, elements, bubble, _) =
             bubble_target(chat_display_name, target, false)?;
         let action = BubbleAction {
             target_text: bubble.text.clone(),
@@ -5549,6 +5966,8 @@ end run
         if dry_run {
             return Ok(action);
         }
+        // Only a real action may dismiss a leftover alert.
+        clear_leftover_alerts(&window)?;
         focus.watch();
         require_send_approval(chat_display_name, "reply in")?;
         let baseline = delivery_observations(&elements.message_table)?;
@@ -5619,9 +6038,11 @@ end run
         new: &str,
         dry_run: bool,
     ) -> Result<BubbleAction> {
+        let started = Instant::now();
         let target = super::BubbleTarget::Text(old.to_string());
-        let (app, _pid, mut focus, window, elements, bubble) =
+        let (app, _pid, mut focus, window, elements, bubble, found_in) =
             bubble_target(chat_display_name, &target, true)?;
+        trace(started, "target bubble found");
         let action = BubbleAction {
             target_text: bubble.text.clone(),
             target_outgoing: bubble.outgoing,
@@ -5629,19 +6050,30 @@ end run
         if dry_run {
             return Ok(action);
         }
+        // Only a real action may dismiss a leftover alert.
+        clear_leftover_alerts(&window)?;
         focus.watch();
-        require_send_approval(chat_display_name, "message edit in")?;
-        let rows = |bubbles: &[Bubble]| -> Vec<(String, bool, bool)> {
+        let prompted = require_send_approval(chat_display_name, "message edit in")?;
+        let rows = |bubbles: &[Bubble]| -> BubbleRows {
             bubbles
                 .iter()
                 .map(|bubble| (bubble.text.clone(), bubble.outgoing, bubble.edited))
                 .collect()
         };
-        let before = rows(&text_bubbles(&elements.message_table)?);
+        // The rows the target was found in are the baseline, unless a macOS
+        // prompt let time pass (saves a 40-row read, ~0.3 s).
+        let before = if prompted {
+            rows(&text_bubbles(&elements.message_table)?)
+        } else {
+            found_in
+        };
+        trace(started, "baseline ready");
         focus.watch();
         press_bubble_menu_item(&app, &bubble.text_area, "수정")?;
+        trace(started, "수정 pressed");
         let prepared = (|| {
             let state = wait_for_mode(&window, super::ComposerMode::Edit)?;
+            trace(started, "edit mode loaded");
             if !wait_for_composer_value(&state.composer, old) {
                 return Err(coded(
                     ErrorCode::ActionUnverified,
@@ -5697,13 +6129,16 @@ end run
                 return Err(error.context(leave_mode_note(&window)));
             }
         };
+        trace(started, "edited text ready");
         let press_error = commit.perform_action(&CFString::new(kAXPressAction)).err();
         focus.restore();
+        trace(started, "edit committed");
         let deadline = Instant::now() + VERIFY_TIMEOUT;
         loop {
             let cleared = attr_as_string(&state.composer, "AXValue").as_deref() == Some("");
             if let Ok(after) = text_bubbles(&elements.message_table) {
                 if cleared && super::edit_verified(&before, &rows(&after), old, new) {
+                    trace(started, "edit verified");
                     return Ok(action);
                 }
             }
@@ -5712,6 +6147,291 @@ end run
                     ErrorCode::DeliveryUncertain,
                     format!(
                         "the edit may have been applied but '{chat_display_name}' shows no 수정됨 bubble with the new text within {}s; check KakaoTalk; press result: {press_error:?}",
+                        VERIFY_TIMEOUT.as_secs()
+                    ),
+                ));
+            }
+            sleep(VERIFY_POLL_INTERVAL);
+        }
+    }
+
+    /// KakaoTalk 26.8's message-selection mode, entered from a delete item:
+    /// every row gets an `AXCheckBox` and the composer gives way to a bar,
+    /// "삭제할 메시지를 선택하세요." with 취소 and 확인 (measured 2026-11-07).
+    /// Returns (확인, 취소) while that bar shows.
+    fn selection_bar(window: &AXUIElement) -> Result<Option<(AXUIElement, AXUIElement)>> {
+        let snap = snapshot_shallow(window)?;
+        let mut texts = Vec::new();
+        snap.find_all("AXStaticText", &mut texts);
+        if !texts.iter().any(|text| {
+            text.value
+                .as_deref()
+                .is_some_and(|value| value.trim().ends_with("선택하세요."))
+        }) {
+            return Ok(None);
+        }
+        let mut buttons = Vec::new();
+        snap.find_all("AXButton", &mut buttons);
+        let titled = |title: &str| -> Vec<AXUIElement> {
+            buttons
+                .iter()
+                .filter(|button| button.title.as_deref() == Some(title))
+                .map(|button| button.element.clone())
+                .collect()
+        };
+        match (titled("확인").as_slice(), titled("취소").as_slice()) {
+            ([confirm], [cancel]) => Ok(Some((confirm.clone(), cancel.clone()))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Back to the normal chat: the confirmation's 취소, then the bar's 취소.
+    fn leave_selection_mode(window: &AXUIElement) {
+        if let Some(sheet) = window_sheet(window) {
+            if let Ok(Some(cancel)) = find_cancel_button(&sheet) {
+                let _ = cancel.perform_action(&CFString::new(kAXPressAction));
+                sleep(Duration::from_millis(200));
+            }
+        }
+        if let Ok(Some((_, cancel))) = selection_bar(window) {
+            let _ = cancel.perform_action(&CFString::new(kAXPressAction));
+        }
+    }
+
+    /// Delete one bubble the way KakaoTalk's own menu does, without raising
+    /// it: `AXShowMenu` on the bubble, press the scope's item (absent means
+    /// KakaoTalk does not offer it: `delete_unavailable`), tick only the
+    /// target's checkbox in the selection mode, 확인, then 삭제 on a
+    /// confirmation headed by that scope. Every pre-commit failure leaves the
+    /// selection mode, so nothing is deleted; after 삭제 the bubble must be
+    /// gone (or replaced by KakaoTalk's notice) or it is `delivery_uncertain`.
+    pub fn delete_via_ax(
+        chat_display_name: &str,
+        text: &str,
+        scope: super::DeleteScope,
+        dry_run: bool,
+    ) -> Result<BubbleAction> {
+        let started = Instant::now();
+        let target = super::BubbleTarget::Text(text.to_string());
+        // 모든 대화 상대에게서 needs your own bubble; 나에게서만 takes any.
+        let own_only = scope == super::DeleteScope::Everyone;
+        let (app, _pid, mut focus, window, elements, bubble, found_in) =
+            bubble_target(chat_display_name, &target, own_only)?;
+        trace(started, "target bubble found");
+        let action = BubbleAction {
+            target_text: bubble.text.clone(),
+            target_outgoing: bubble.outgoing,
+        };
+        if dry_run {
+            return Ok(action);
+        }
+        // Only a real action may dismiss a leftover alert.
+        clear_leftover_alerts(&window)?;
+        focus.watch();
+        let prompted = require_send_approval(chat_display_name, "message delete in")?;
+        let pairs = |rows: &[(String, bool, bool)]| -> Vec<(String, bool)> {
+            rows.iter()
+                .map(|(text, outgoing, _)| (text.clone(), *outgoing))
+                .collect()
+        };
+        let before = if prompted {
+            text_bubbles(&elements.message_table)?
+                .iter()
+                .map(|bubble| (bubble.text.clone(), bubble.outgoing))
+                .collect()
+        } else {
+            pairs(&found_in)
+        };
+        focus.watch();
+        press_menu_item_or(
+            &app,
+            &bubble.text_area,
+            scope.menu_item(),
+            ErrorCode::DeleteUnavailable,
+        )?;
+        focus.restore();
+        trace(started, "delete item pressed");
+
+        let prepared = (|| -> Result<AXUIElement> {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let (confirm, _) = loop {
+                if let Some(bar) = selection_bar(&window)? {
+                    break bar;
+                }
+                if Instant::now() >= deadline {
+                    return Err(coded(
+                        ErrorCode::ActionUnverified,
+                        "KakaoTalk's message-selection mode did not appear after the delete item",
+                    ));
+                }
+                sleep(Duration::from_millis(50));
+            };
+            trace(started, "selection mode");
+            // The target's checkbox. KakaoTalk redraws the rows for this mode,
+            // so the bubble's text area is usually a new AX element: prefer
+            // that identity, else the one row with the exact text and
+            // direction (the target was already unique by both). Checkboxes
+            // can appear a moment after the bar.
+            let center = table_center_x(&elements.message_table);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let (checkboxes, checkbox) = loop {
+                let mut seen = 0;
+                let (rows, _) = tail_rows(&elements.message_table, |_| {
+                    seen += 1;
+                    seen >= BUBBLE_SEARCH_ROWS
+                })?;
+                let area = |row: &AxNode| {
+                    row.find_first("AXTextArea")
+                        .map(|area| area.element.clone())
+                };
+                let same_element = |row: &AxNode| {
+                    area(row).is_some_and(|element| unsafe {
+                        CFEqual(element.as_CFTypeRef(), bubble.text_area.as_CFTypeRef()) != 0
+                    })
+                };
+                let same_text = |row: &AxNode| {
+                    row.find_first("AXTextArea").is_some_and(|area| {
+                        area.value.as_deref() == Some(bubble.text.as_str())
+                            && center
+                                .zip(area.center_x())
+                                .is_some_and(|(table, bubble_x)| {
+                                    (bubble_x > table) == bubble.outgoing
+                                })
+                    })
+                };
+                let with_box: Vec<(&AxNode, AXUIElement)> = rows
+                    .iter()
+                    .filter_map(|row| {
+                        row.find_first("AXCheckBox")
+                            .map(|checkbox| (row, checkbox.element.clone()))
+                    })
+                    .collect();
+                let by_element: Vec<usize> = (0..with_box.len())
+                    .filter(|&i| same_element(with_box[i].0))
+                    .collect();
+                let by_text: Vec<usize> = (0..with_box.len())
+                    .filter(|&i| same_text(with_box[i].0))
+                    .collect();
+                let pick = match (by_element.as_slice(), by_text.as_slice()) {
+                    ([index], _) | ([], [index]) => Some(*index),
+                    _ => None,
+                };
+                if let Some(index) = pick {
+                    let checkboxes: Vec<(bool, AXUIElement)> = with_box
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, checkbox))| (i == index, checkbox.clone()))
+                        .collect();
+                    let checkbox = with_box[index].1.clone();
+                    break (checkboxes, checkbox);
+                }
+                if Instant::now() >= deadline {
+                    return Err(coded(
+                        ErrorCode::ActionUnverified,
+                        format!(
+                            "the selection mode shows {} rows with checkboxes, {} of them the target bubble; refusing to guess",
+                            with_box.len(),
+                            by_text.len().max(by_element.len())
+                        ),
+                    ));
+                }
+                sleep(Duration::from_millis(100));
+            };
+            checkbox
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|error| anyhow!("could not tick the target bubble: {error:?}"))?;
+            // Exactly the target ticked, and 확인 enabled.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let ticked: Vec<bool> = checkboxes
+                    .iter()
+                    .filter(|(_, checkbox)| attr_as_i64(checkbox, "AXValue") == Some(1))
+                    .map(|(target, _)| *target)
+                    .collect();
+                if ticked == [true] && attr_as_bool(&confirm, "AXEnabled") == Some(true) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(coded(
+                        ErrorCode::ActionUnverified,
+                        format!(
+                            "the selection did not become exactly the target bubble ({} ticked)",
+                            ticked.len()
+                        ),
+                    ));
+                }
+                sleep(Duration::from_millis(50));
+            }
+            confirm
+                .perform_action(&CFString::new(kAXPressAction))
+                .map_err(|error| anyhow!("could not press 확인: {error:?}"))?;
+            trace(started, "selection confirmed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let sheet = loop {
+                if let Some(sheet) = window_sheet(&window) {
+                    break sheet;
+                }
+                if Instant::now() >= deadline {
+                    return Err(coded(
+                        ErrorCode::ActionUnverified,
+                        "KakaoTalk showed no delete confirmation after 확인",
+                    ));
+                }
+                sleep(Duration::from_millis(50));
+            };
+            let snap = snapshot_with(&sheet, true)?;
+            let mut labels = Vec::new();
+            snap.find_all("AXStaticText", &mut labels);
+            let texts: Vec<String> = labels
+                .iter()
+                .filter_map(|label| label.value.clone())
+                .collect();
+            let buttons = sheet_buttons(&sheet)?;
+            let facts: Vec<super::SheetButton> =
+                buttons.iter().map(|(_, facts)| facts.clone()).collect();
+            let Some(index) = super::pick_delete_confirm(&texts, &facts, scope) else {
+                return Err(coded(
+                    ErrorCode::ActionUnverified,
+                    format!(
+                        "KakaoTalk's confirmation does not match '{}' (it says {texts:?})",
+                        scope.menu_item()
+                    ),
+                ));
+            };
+            Ok(buttons[index].0.clone())
+        })();
+        let delete = match prepared {
+            Ok(delete) => delete,
+            Err(error) => {
+                leave_selection_mode(&window);
+                return Err(
+                    error.context("nothing was deleted; KakaoTalk is back in the normal chat")
+                );
+            }
+        };
+        let press_error = delete.perform_action(&CFString::new(kAXPressAction)).err();
+        trace(started, "delete committed");
+        let deadline = Instant::now() + VERIFY_TIMEOUT;
+        loop {
+            let back =
+                matches!(selection_bar(&window), Ok(None)) && window_sheet(&window).is_none();
+            if back {
+                if let Ok(after) = text_bubbles(&elements.message_table) {
+                    let after: Vec<(String, bool)> = after
+                        .iter()
+                        .map(|bubble| (bubble.text.clone(), bubble.outgoing))
+                        .collect();
+                    if super::delete_verified(&before, &after, &bubble.text, bubble.outgoing) {
+                        trace(started, "delete verified");
+                        return Ok(action);
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(coded(
+                    ErrorCode::DeliveryUncertain,
+                    format!(
+                        "the delete may have been applied but '{chat_display_name}' still shows the bubble after {}s; check KakaoTalk; press result: {press_error:?}",
                         VERIFY_TIMEOUT.as_secs()
                     ),
                 ));
@@ -6449,9 +7169,9 @@ end run
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
-    send_via_ax_classified, BubbleAction, ChatListRow,
+    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax,
+    launch_kakaotalk_in_background, login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -6518,6 +7238,17 @@ mod stub {
         ))
     }
 
+    pub fn delete_via_ax(
+        _chat_display_name: &str,
+        _text: &str,
+        _scope: super::DeleteScope,
+        _dry_run: bool,
+    ) -> Result<BubbleAction> {
+        Err(anyhow!(
+            "local-delete (AX automation) is only supported on macOS"
+        ))
+    }
+
     pub fn assign_kakaotalk_to_all_spaces() -> Result<()> {
         Err(anyhow!("Spaces assignment is only supported on macOS"))
     }
@@ -6565,9 +7296,9 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    assign_kakaotalk_to_all_spaces, diagnose, edit_via_ax, launch_kakaotalk_in_background,
-    login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list, send_attachment_via_ax,
-    send_via_ax_classified, BubbleAction, ChatListRow,
+    assign_kakaotalk_to_all_spaces, delete_via_ax, diagnose, edit_via_ax,
+    launch_kakaotalk_in_background, login_via_ax, read_via_ax, reply_via_ax, scrape_chat_list,
+    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must
