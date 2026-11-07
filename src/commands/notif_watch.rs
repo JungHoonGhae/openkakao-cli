@@ -371,11 +371,13 @@ fn read_kakao_payloads(db_path: &Path) -> Result<Vec<Vec<u8>>> {
 }
 
 /// The KakaoTalk notifications Notification Center still holds, read-only.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn retained_messages() -> Result<Vec<NotifMessage>> {
     Ok(read_kakao_notifications(&notif_db_path()?)?.messages)
 }
 
 /// What the retained notifications say about one chat window's id.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatIdMatch {
     /// One chat id, backed by this many visible messages.
@@ -393,6 +395,7 @@ pub enum ChatIdMatch {
 /// all matches counts; none or several stay unknown or ambiguous. Message
 /// text can be copied into another chat, so this is a label to show a
 /// person, never evidence for approving a send.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn resolve_chat_id(
     window_title: &str,
     visible: &[crate::ax_send::AxMessage],

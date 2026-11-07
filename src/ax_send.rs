@@ -116,7 +116,10 @@ fn same_but_spacing(name: &str, target: &str) -> bool {
 fn chat_card(name: &str, view: &ChatView, lines: usize) -> String {
     use crate::util::{escape_terminal_text as esc, truncate};
     let mut facts = vec![match view.chat_id {
-        Some(id) => format!("chat '{}' (id {id})", esc(name)),
+        Some(id) => format!(
+            "chat '{}' (id {id} per notifications, unverified)",
+            esc(name)
+        ),
         None => format!("chat '{}'", esc(name)),
     }];
     if let Some(members) = view.members {
@@ -7170,6 +7173,19 @@ end run
         }
         let (tab, search, popover, row) = open_friend_info(&app, name)?;
         let info = read_friend_info(&popover, name);
+        // The name the friend's 1:1 chat would take must not be an
+        // allowlisted one ("" restores the friend's own name).
+        let resulting = match rename {
+            Some("") => info.as_ref().ok().and_then(|i| i.own_name.clone()),
+            other => other.map(str::to_string),
+        };
+        if let Some(resulting) = resulting.filter(|n| !super::needs_device_owner_auth(n)) {
+            let _ = popover.perform_action(&CFString::new("AXCancel"));
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("the friend would show as '{resulting}', an allowed_send_chats name; nothing was changed"),
+            ));
+        }
         if memo.is_none() && rename.is_none() {
             let _ = popover.perform_action(&CFString::new("AXCancel"));
             drop(search);
@@ -7343,6 +7359,12 @@ end run
     pub fn rename_chat_via_ax(chat_display_name: &str, new_name: &str) -> Result<()> {
         if new_name.trim().is_empty() || new_name.chars().count() > 50 {
             anyhow::bail!("a chat name has 1 to 50 characters");
+        }
+        if !super::needs_device_owner_auth(new_name) {
+            return Err(coded(
+                ErrorCode::ChatNotAllowed,
+                format!("'{new_name}' is an allowed_send_chats name; renaming a chat to it would let sends reach it without approval"),
+            ));
         }
         let pid = find_kakaotalk_pid()?;
         ensure_ax_permission()?;
@@ -7611,6 +7633,11 @@ end run
             .ok_or_else(|| anyhow!("the save sheet shows no file name"))?;
         let folder =
             by_id(&panel_node, "where popup").and_then(|popup| attr_as_string(&popup, "AXValue"));
+        if name.contains('/') || name.starts_with('.') {
+            anyhow::bail!("the save sheet proposes an unexpected file name {name:?}");
+        }
+        // Only a file written after 저장 is this export, never an older one.
+        let saved_after = std::time::SystemTime::now() - Duration::from_secs(2);
         let ok = by_id(&panel_node, "OKButton")
             .ok_or_else(|| anyhow!("the save sheet has no 저장 button"))?;
         let _ = ok.perform_action(&CFString::new(kAXPressAction));
@@ -7662,7 +7689,14 @@ end run
             if let Some(path) = folders
                 .iter()
                 .map(|dir| dir.join(format!("{name}.csv")))
-                .find(|path| path.is_file())
+                .find(|path| {
+                    std::fs::symlink_metadata(path).is_ok_and(|meta| {
+                        meta.file_type().is_file()
+                            && meta
+                                .modified()
+                                .is_ok_and(|modified| modified >= saved_after)
+                    })
+                })
             {
                 return Ok(path);
             }
