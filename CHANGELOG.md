@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-11-07
+
+### Added
+- **`local-leave-chat <chat>...`** leaves chats with KakaoTalk's 채팅방 나가기 without opening them. Each row is found through the chat search by exact name (`--pick` for duplicates), KakaoTalk's confirmation must ask about leaving, and success needs the row gone from the search. Leaving cannot be undone, so it needs device-owner authentication.
+- **`ax-friend <channel> --block`** blocks a channel through the friend menu's 차단: its ads stop, and 설정 > 친구 > 차단친구 관리 undoes it. KakaoTalk's sheet must say 채널 차단, so a person is never blocked; success needs the channel gone from the friend search. Measured: 14 ad channels blocked and 6 dead-service chats left, about 3 s each.
+
+### Fixed
+- **Renaming an allowlisted friend or chat is refused.** `ax-friend --rename` and `local-rename-chat` renamed a friend or chat away from its `allowed_send_chats` entry, which then matched nothing, so its standing approval ended without notice. Change `allowed_send_chats` first.
+
 ## [1.15.1] - 2026-11-07
 
 ### Fixed

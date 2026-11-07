@@ -646,6 +646,16 @@ enum Commands {
         #[arg(required = true)]
         chat_names: Vec<String>,
     },
+    /// Leave chats with KakaoTalk's 채팅방 나가기, without opening them (found
+    /// through the chat search by exact name; --pick for duplicates). Cannot
+    /// be undone: needs device-owner authentication; back up with ax-export first
+    LocalLeaveChat {
+        /// Exact chat names; each is left separately
+        #[arg(required = true)]
+        chat_names: Vec<String>,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Change the name this account shows for a chat (채팅방 설정 → 편집),
     /// focus-free; needs device-owner authentication
     LocalRenameChat {
@@ -823,6 +833,10 @@ enum Commands {
         /// Open (or start) the 1:1 chat with this friend through 채팅하기
         #[arg(long, conflicts_with_all = ["memo", "rename"])]
         open_chat: bool,
+        /// Block this channel (its ads stop; 설정 > 친구 > 차단친구 관리 undoes it).
+        /// Channels only: blocking a person is refused
+        #[arg(long, conflicts_with_all = ["memo", "rename", "open_chat"])]
+        block: bool,
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -1019,6 +1033,7 @@ fn should_warn_about_server_login(command: &Commands) -> bool {
             | Commands::LocalReact { .. }
             | Commands::LocalRenameChat { .. }
             | Commands::LocalMarkRead { .. }
+            | Commands::LocalLeaveChat { .. }
             | Commands::AxChats { .. }
             | Commands::LocalSendPhoto { .. }
             | Commands::SafeSend { .. }
@@ -1872,6 +1887,46 @@ fn run(cli: Cli) -> Result<()> {
                 );
             }
         }
+        Commands::LocalLeaveChat { chat_names, yes } => {
+            require_ax_send(&config)?;
+            eprintln!("Leave these KakaoTalk chats (their messages are removed from this account; this cannot be undone):");
+            for name in &chat_names {
+                eprintln!("  {}", util::escape_terminal_text(name));
+            }
+            if !yes {
+                eprint!("Continue?\n[y/N] ");
+                if !util::confirm()? {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            let mut results = Vec::new();
+            let mut failed = 0;
+            for name in &chat_names {
+                match ax_send::leave_chat_via_ax(name) {
+                    Ok(()) => {
+                        if !json {
+                            println!("{}: left", util::escape_terminal_text(name));
+                        }
+                        results.push(serde_json::json!({"chat_name": name, "status": "verified"}));
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        let code = error::error_code(&error).map(|c| c.as_str());
+                        if !json {
+                            eprintln!("{}: {error:#}", util::escape_terminal_text(name));
+                        }
+                        results.push(serde_json::json!({"chat_name": name, "status": "failed", "code": code, "message": format!("{error:#}")}));
+                    }
+                }
+            }
+            if json {
+                util::output_json(&serde_json::json!({"results": results}))?;
+            }
+            if failed > 0 {
+                anyhow::bail!("{failed} of {} chats were not left", chat_names.len());
+            }
+        }
         Commands::LocalRenameChat {
             chat_name,
             new_name,
@@ -2017,6 +2072,19 @@ fn run(cli: Cli) -> Result<()> {
             me: me.as_deref(),
             json,
         })?,
+        Commands::AxFriend {
+            name, block: true, ..
+        } => {
+            ax_send::block_channel_via_ax(&name)?;
+            if json {
+                util::output_json(&serde_json::json!({"name": name, "status": "blocked"}))?;
+            } else {
+                println!(
+                    "Blocked the channel '{}' (설정 > 친구 > 차단친구 관리 undoes it).",
+                    util::escape_terminal_text(&name)
+                );
+            }
+        }
         Commands::AxFriend {
             name,
             open_chat: true,
