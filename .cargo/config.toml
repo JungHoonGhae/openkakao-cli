@@ -1,0 +1,4 @@
+# clap's derive code for this CLI's many subcommands needs more than the
+# 2 MiB test threads get in debug builds (the binary's main thread has 8 MiB).
+[env]
+RUST_MIN_STACK = "8388608"
