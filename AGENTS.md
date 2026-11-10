@@ -229,7 +229,7 @@ Branch on `code`, which stays stable; uncoded errors use `"unclassified"`.
 Show `fix` to the human. Codes: `accessibility_not_granted`,
 `kakaotalk_not_running`, `kakaotalk_signed_out`, `main_window_not_visible`,
 `main_window_minimized`, `kakaotalk_not_on_all_spaces`, `chat_list_unavailable`,
-`chat_window_not_open`, `chat_not_found`, `chat_list_filtered`,
+`chat_window_not_open`, `chat_window_on_other_space`, `chat_not_found`, `chat_list_filtered`,
 `chat_ambiguous`, `send_button_missing`, `menu_not_found`, `staging_conflict`,
 `composer_busy`, `chat_dialog_open`, `delete_unavailable`, `message_not_found`,
 `message_ambiguous`, `action_unverified`,

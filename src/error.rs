@@ -106,6 +106,7 @@ pub enum ErrorCode {
     NotOnAllSpaces,
     ChatListUnavailable,
     ChatWindowNotOpen,
+    ChatWindowOnOtherSpace,
     ChatNotFound,
     ChatListFiltered,
     ChatAmbiguous,
@@ -141,6 +142,7 @@ impl ErrorCode {
             Self::NotOnAllSpaces => "kakaotalk_not_on_all_spaces",
             Self::ChatListUnavailable => "chat_list_unavailable",
             Self::ChatWindowNotOpen => "chat_window_not_open",
+            Self::ChatWindowOnOtherSpace => "chat_window_on_other_space",
             Self::ChatNotFound => "chat_not_found",
             Self::ChatListFiltered => "chat_list_filtered",
             Self::ChatAmbiguous => "chat_ambiguous",
@@ -206,7 +208,14 @@ impl ErrorCode {
                  sent to without touching your focus, on any desktop once an openkakao-cli \
                  command has run while the window was showing. Or re-run with --open-if-needed, \
                  which opens it from the chat list's context menu without raising KakaoTalk \
-                 (this marks the chat as read)."
+                 (this marks the chat as read; macOS puts the new window on the desktop you are \
+                 viewing)."
+            }
+            Self::ChatWindowOnOtherSpace => {
+                "KakaoTalk's file panels take no choice in a chat window on another desktop: their \
+                 열기 and 저장 stay disabled there (measured on macOS 26.5), so nothing was opened \
+                 or sent. Show that chat window on the desktop you are viewing and re-run, or close \
+                 it and re-run with --open-if-needed: macOS then opens the chat on this desktop."
             }
             Self::ChatNotFound => {
                 "Only rows KakaoTalk has loaded are visible, and the list can stay stale until the \
@@ -456,6 +465,13 @@ mod coded_tests {
             .fix()
             .contains("All Desktops"));
         assert!(ErrorCode::ChatNotFound.fix().contains("repaints"));
+        assert_eq!(
+            ErrorCode::ChatWindowOnOtherSpace.as_str(),
+            "chat_window_on_other_space"
+        );
+        assert!(ErrorCode::ChatWindowOnOtherSpace
+            .fix()
+            .contains("--open-if-needed"));
         assert!(ErrorCode::UserActive.fix().contains("--wait-idle"));
     }
 }
