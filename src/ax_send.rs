@@ -3977,6 +3977,27 @@ function run(argv) {
         was_open: bool,
     }
 
+    /// KakaoTalk's open and save panels take no choice in a chat window on
+    /// another desktop: rows can be selected, but 열기 and 저장 stay disabled
+    /// (measured 2026-11-10 on macOS 26.5; 취소 and the window's close button
+    /// still work). Refuse before anything is pressed instead of waiting the
+    /// panel out (32 s for a file, up to 5 min for an export).
+    fn refuse_panel_on_other_space(
+        app: &AXUIElement,
+        window: &AXUIElement,
+        chat_display_name: &str,
+    ) -> Result<()> {
+        if on_this_space(app, window) {
+            return Ok(());
+        }
+        Err(coded(
+            ErrorCode::ChatWindowOnOtherSpace,
+            format!(
+                "the '{chat_display_name}' chat window is on another desktop, where KakaoTalk's file panel takes no choice"
+            ),
+        ))
+    }
+
     /// Return the one open chat window titled exactly `chat_display_name`.
     ///
     /// An already-open exact-title window is used directly: no chat-list walk
@@ -6130,6 +6151,9 @@ end run
         let (window, elements) = wait_for_chat_elements(&app, chat_display_name)?;
         clear_leftover_alerts(&window)?;
         trace(started, "chat window inspected");
+        if !fallback_keys {
+            refuse_panel_on_other_space(&app, &window, chat_display_name)?;
+        }
         attachment_observations(&elements.message_table, filename)
             .context("could not read the exact target's messages before opening the file picker")?;
         let send_files = button_with_shortcut(&window, "⌘O")?
@@ -8506,6 +8530,7 @@ end run
         focus.restore();
         let window = chat.window;
         clear_leftover_alerts(&window)?;
+        refuse_panel_on_other_space(&app, &window, chat_display_name)?;
         let dialog = open_chat_settings(&app, pid, &window)?;
         trace(started, "채팅방 설정 opened");
         let result = save_export(&dialog);

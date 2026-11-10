@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.1] - 2026-11-10
+
+### Fixed
+- **A file, photo or export in a chat window on another desktop stops at once with `chat_window_on_other_space`.** KakaoTalk's open and save panels take no choice there: a file row can be selected but 열기 and 저장 stay disabled (measured on macOS 26.5.2, KakaoTalk 26.9). `local-send-file` and `local-send-photo` waited 32 s and failed as `unclassified`, and `ax-export` (also behind `ax-search` and `style --learn`) hung with the save sheet left open. They now refuse in 0.3 s before anything is pressed, as `not_delivered` and safe to retry. Text, reply, edit and delete work in such a window and are unchanged.
+
+### Notes
+- A chat that `--open-if-needed` opens appears on the desktop being viewed: macOS puts a new window there, and neither the private window-move calls nor assigning KakaoTalk to its own desktop changed that on macOS 26.5.2. Keep the chats you send to open on KakaoTalk's desktop and nothing shows.
+
 ## [1.19.0] - 2026-11-10
 
 ### Added
