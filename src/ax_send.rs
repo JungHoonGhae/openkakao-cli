@@ -915,6 +915,127 @@ pub(crate) fn kakaotalk_spaces_assignment() -> Option<bool> {
         .map(|spaces| kakaotalk_on_all_spaces(&spaces))
 }
 
+/// The 20-byte token the private `_AXUIElementCreateWithRemoteToken` turns
+/// into an element of another process: pid, a zero, the Cocoa magic
+/// `0x636f636f` ("coco") and the element id, little-endian. Layout from
+/// AltTab (`ApplicationServices.HIServices.framework.swift`); it equals the
+/// first 20 bytes `_AXUIElementRemoteTokenCreate` returns (macOS 26.5).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn remote_token(pid: i32, element_id: u64) -> [u8; 20] {
+    let mut token = [0; 20];
+    token[..4].copy_from_slice(&pid.to_le_bytes());
+    token[8..12].copy_from_slice(&0x636f_636f_u32.to_le_bytes());
+    token[12..].copy_from_slice(&element_id.to_le_bytes());
+    token
+}
+
+/// One of KakaoTalk's windows in CoreGraphics' list of all windows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CgWindow {
+    id: u32,
+    layer: i64,
+    on_screen: bool,
+}
+
+/// The window ids a remote-token sweep looks for: normal (layer-0) windows
+/// that are not on screen, so on another Space or never shown, minus the
+/// ones already in hand and the ones an earlier sweep in this process could
+/// not reach. KakaoTalk 26.9 keeps nine hidden helper windows (30 and 39 px
+/// bars, a 64 px square) that no element ever resolves to; without that
+/// memo every sweep would spend its whole budget on them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sweep_targets(
+    windows: &[CgWindow],
+    in_hand: &[u32],
+    unreachable: &std::collections::HashSet<u32>,
+) -> std::collections::HashSet<u32> {
+    windows
+        .iter()
+        .filter(|window| window.layer == 0 && !window.on_screen)
+        .map(|window| window.id)
+        .filter(|id| !in_hand.contains(id) && !unreachable.contains(id))
+        .collect()
+}
+
+/// Walk element ids up from 0 until `inspect` has what it needs or
+/// `within_budget` turns false (checked before every id, so only the call
+/// in flight can overrun). An app's ids come from a counter that only
+/// grows, with dead ids in between, so the walk is bounded by time, not by
+/// an id ceiling (AltTab's `AxTraversalPolicy`). Returns how many ids it
+/// tried.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sweep_ids<T>(
+    mut within_budget: impl FnMut() -> bool,
+    mut candidate: impl FnMut(u64) -> Option<T>,
+    mut inspect: impl FnMut(T) -> bool,
+) -> u64 {
+    let mut id = 0;
+    while id < u64::MAX && within_budget() {
+        let done = candidate(id).is_some_and(&mut inspect);
+        id += 1;
+        if done {
+            break;
+        }
+    }
+    id
+}
+
+/// `AXWindows` first, then the app's key and main window, each once
+/// (AltTab's `PublishedWindows.merge`). AppKit filters only `AXWindows` by
+/// Space. The key and main window are plain reads of the app's last ones,
+/// so they can be on another Space, and an empty `AXWindows` keeps them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn merge_windows<T>(
+    windows: Vec<T>,
+    key_and_main: [Option<T>; 2],
+    same: impl Fn(&T, &T) -> bool,
+) -> Vec<T> {
+    let mut merged: Vec<T> = Vec::with_capacity(windows.len() + 2);
+    for window in windows
+        .into_iter()
+        .chain(key_and_main.into_iter().flatten())
+    {
+        if !merged.iter().any(|seen| same(seen, &window)) {
+            merged.push(window);
+        }
+    }
+    merged
+}
+
+/// Which window [`pick_window`] chose.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum WindowPick {
+    /// Among `AXWindows` and the key and main window.
+    Listed(usize),
+    /// Among the windows a remote-token sweep reached on other Spaces.
+    Swept(usize),
+    NotFound,
+    Ambiguous(usize),
+}
+
+/// The one window titled exactly `target`: among the listed windows as
+/// before, and only when none of them is, among the windows `sweep` reaches
+/// on other Spaces (a remote-token sweep costs up to its budget, so it runs
+/// only then). Duplicate exact titles on either side are ambiguous.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_window(
+    listed: &[Option<String>],
+    sweep: impl FnOnce() -> Vec<Option<String>>,
+    target: &str,
+) -> WindowPick {
+    match match_chat_row(listed, target) {
+        ChatMatch::Found(index) => WindowPick::Listed(index),
+        ChatMatch::Ambiguous(count) => WindowPick::Ambiguous(count),
+        ChatMatch::NotFound => match match_chat_row(&sweep(), target) {
+            ChatMatch::Found(index) => WindowPick::Swept(index),
+            ChatMatch::Ambiguous(count) => WindowPick::Ambiguous(count),
+            ChatMatch::NotFound => WindowPick::NotFound,
+        },
+    }
+}
+
 /// Which message bubble `local-reply` / `local-edit` act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BubbleTarget {
@@ -1237,6 +1358,121 @@ mod policy_tests {
         assert!(!kakaotalk_on_all_spaces(&plist::Value::Dictionary(
             plist::Dictionary::new()
         )));
+    }
+
+    #[test]
+    fn remote_token_matches_the_measured_layout() {
+        // `_AXUIElementRemoteTokenCreate` on Finder (pid 544), element id 1,
+        // macOS 26.5: its first 20 bytes.
+        let measured = [
+            0x20, 0x02, 0, 0, 0, 0, 0, 0, 0x6f, 0x63, 0x6f, 0x63, 0x01, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(remote_token(544, 1), measured);
+        let token = remote_token(60_084, 0x0102_0304_0506_0708);
+        assert_eq!(&token[..4], &60_084_i32.to_le_bytes());
+        assert_eq!(&token[4..8], &[0; 4]);
+        assert_eq!(&token[8..12], b"ococ");
+        assert_eq!(&token[12..], &[8, 7, 6, 5, 4, 3, 2, 1]);
+    }
+
+    fn cg(id: u32, layer: i64, on_screen: bool) -> CgWindow {
+        CgWindow {
+            id,
+            layer,
+            on_screen,
+        }
+    }
+
+    #[test]
+    fn sweeps_target_only_unlisted_off_screen_normal_windows() {
+        let windows = [
+            cg(1, 0, true),    // on this Space
+            cg(2, 0, false),   // on another Space, already listed (key window)
+            cg(3, 0, false),   // on another Space
+            cg(4, 101, false), // a menu
+            cg(5, 0, false),   // a helper an earlier sweep could not reach
+        ];
+        let unreachable = std::collections::HashSet::from([5]);
+        assert_eq!(
+            sweep_targets(&windows, &[1, 2], &unreachable),
+            std::collections::HashSet::from([3])
+        );
+        // Nothing left to look for means no sweep at all.
+        assert!(sweep_targets(&windows, &[1, 2, 3], &unreachable).is_empty());
+    }
+
+    #[test]
+    fn id_sweep_stops_when_done_or_out_of_budget() {
+        // Stops right after the id that completes it.
+        let mut seen = Vec::new();
+        let tried = sweep_ids(
+            || true,
+            |id| (id % 2 == 1).then_some(id),
+            |id| {
+                seen.push(id);
+                id == 5
+            },
+        );
+        assert_eq!((tried, seen), (6, vec![1, 3, 5]));
+
+        // The budget is checked before every id, including the first.
+        let mut budget = 3;
+        let tried = sweep_ids(
+            || {
+                budget -= 1;
+                budget >= 0
+            },
+            Some,
+            |_| false,
+        );
+        assert_eq!(tried, 3);
+        assert_eq!(sweep_ids(|| false, Some, |_: u64| true), 0);
+    }
+
+    #[test]
+    fn listed_windows_keep_order_and_add_key_and_main_once() {
+        let same = |a: &u32, b: &u32| a == b;
+        // On this Space the key and main window are already in AXWindows.
+        assert_eq!(merge_windows(vec![1, 2], [Some(2), Some(2)], same), [1, 2]);
+        // AXWindows repeats an element now and then.
+        assert_eq!(merge_windows(vec![1, 1, 2], [None, None], same), [1, 2]);
+        // The key window on another Space is appended after this Space's.
+        assert_eq!(merge_windows(vec![1], [Some(7), Some(8)], same), [1, 7, 8]);
+        // Every window on another Space: AXWindows is empty, the key one is not.
+        assert_eq!(merge_windows(Vec::new(), [Some(7), Some(7)], same), [7]);
+        assert!(merge_windows(Vec::<u32>::new(), [None, None], same).is_empty());
+    }
+
+    #[test]
+    fn other_spaces_are_swept_only_when_no_listed_window_matches() {
+        let titles = |names: &[&str]| -> Vec<Option<String>> {
+            names.iter().map(|name| Some(name.to_string())).collect()
+        };
+        let no_sweep =
+            || -> Vec<Option<String>> { panic!("swept although a listed window matched") };
+        assert_eq!(
+            pick_window(&titles(&["카카오톡", "정훈"]), no_sweep, "정훈"),
+            WindowPick::Listed(1)
+        );
+        assert_eq!(
+            pick_window(&titles(&["정훈", "정훈"]), no_sweep, "정훈"),
+            WindowPick::Ambiguous(2)
+        );
+        // Not listed: the swept windows decide, exactly as the listed ones do.
+        let swept = || titles(&["Alice & Bob", "정훈"]);
+        assert_eq!(
+            pick_window(&titles(&["카카오톡"]), swept, "정훈"),
+            WindowPick::Swept(1)
+        );
+        assert_eq!(
+            pick_window(&titles(&["카카오톡"]), swept, "Alice"),
+            WindowPick::NotFound
+        );
+        assert_eq!(
+            pick_window(&[], || titles(&["정훈", "정훈"]), "정훈"),
+            WindowPick::Ambiguous(2)
+        );
+        assert_eq!(pick_window(&[], Vec::new, "정훈"), WindowPick::NotFound);
     }
 
     fn bubbles(list: &[(&str, bool)]) -> Vec<(String, bool)> {
@@ -2453,49 +2689,258 @@ mod imp {
         }
     }
 
+    /// `AXUIElementRef _AXUIElementCreateWithRemoteToken(CFDataRef token)`,
+    /// returning a +1 element (AltTab takes it with `takeRetainedValue`).
+    type CreateWithRemoteToken =
+        unsafe extern "C" fn(core_foundation::data::CFDataRef) -> AXUIElementRef;
+    /// `AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *)`.
+    type GetWindow = unsafe extern "C" fn(AXUIElementRef, *mut u32) -> accessibility_sys::AXError;
+
+    /// The private HIServices calls behind the other-Space lookup, resolved
+    /// at run time: a macOS without them loses only that lookup, where a
+    /// link-time import would keep the whole binary from launching.
+    struct RemoteTokenApi {
+        create: CreateWithRemoteToken,
+        window_id: GetWindow,
+    }
+
+    fn remote_token_api() -> Option<&'static RemoteTokenApi> {
+        static API: std::sync::OnceLock<Option<RemoteTokenApi>> = std::sync::OnceLock::new();
+        API.get_or_init(|| unsafe {
+            let create = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"_AXUIElementCreateWithRemoteToken".as_ptr(),
+            );
+            let window_id = libc::dlsym(libc::RTLD_DEFAULT, c"_AXUIElementGetWindow".as_ptr());
+            (!create.is_null() && !window_id.is_null()).then(|| RemoteTokenApi {
+                create: std::mem::transmute::<*mut libc::c_void, CreateWithRemoteToken>(create),
+                window_id: std::mem::transmute::<*mut libc::c_void, GetWindow>(window_id),
+            })
+        })
+        .as_ref()
+    }
+
+    pub fn other_space_lookup_available() -> bool {
+        remote_token_api().is_some()
+    }
+
+    /// The CoreGraphics id of the window an element is in (a window's own,
+    /// or its window's for anything inside it), by `_AXUIElementGetWindow`.
+    fn window_id(element: &AXUIElement) -> Option<u32> {
+        let api = remote_token_api()?;
+        let mut id = 0;
+        let error = unsafe { (api.window_id)(element.as_concrete_TypeRef(), &mut id) };
+        (error == 0 && id != 0).then_some(id)
+    }
+
+    /// How long one remote-token sweep may take: AltTab's budget. On the
+    /// MacBook Air (KakaoTalk 26.9, macOS 26.5) an id costs 14.6 µs, so this
+    /// covers ids up to about 17,000. There KakaoTalk's two windows had ids
+    /// 43 and 85, and the highest live id was 113 after `doctor` walked 712
+    /// chat-list rows: rows and their cells are indexed children of the
+    /// table and take no ids of their own (measured 2026-11-10).
+    const SWEEP_BUDGET: Duration = Duration::from_millis(250);
+    /// Messaging timeout for each swept element, so a busy KakaoTalk stalls
+    /// one call rather than the whole budget.
+    const SWEEP_MESSAGE_TIMEOUT_SECS: f32 = 0.25;
+    /// KakaoTalk's main window (and its 로그인 window, which reuses it).
+    const MAIN_WINDOW_IDENTIFIER: &str = "Main Window";
+
+    fn element_from_token(api: &RemoteTokenApi, pid: i32, id: u64) -> Option<AXUIElement> {
+        let token = core_foundation::data::CFData::from_buffer(&super::remote_token(pid, id));
+        let element = unsafe { (api.create)(token.as_concrete_TypeRef()) };
+        if element.is_null() {
+            return None;
+        }
+        let element = unsafe { AXUIElement::wrap_under_create_rule(element) };
+        let _ = element.set_messaging_timeout(SWEEP_MESSAGE_TIMEOUT_SECS);
+        Some(element)
+    }
+
+    /// `AXWindows` plus KakaoTalk's key and main window, in one batched read.
+    /// AppKit filters only `AXWindows` by Space, so the other two reach the
+    /// window last used on another Space at no extra cost (AltTab's
+    /// `PublishedWindows`; KakaoTalk is an AppKit app).
+    fn listed_windows(app: &AXUIElement) -> Result<Vec<AXUIElement>> {
+        let read_failed = || anyhow!("AXWindows read failed");
+        let values = copy_attributes(app, &["AXWindows", "AXFocusedWindow", "AXMainWindow"])
+            .ok_or_else(read_failed)?;
+        let windows = values
+            .get(0)
+            .and_then(|value| value.downcast::<CFArray<*const std::ffi::c_void>>())
+            .ok_or_else(read_failed)?
+            .iter()
+            .map(|window| unsafe { AXUIElement::wrap_under_get_rule(*window as AXUIElementRef) })
+            .collect();
+        let window_at = |index| {
+            values
+                .get(index)
+                .and_then(|value| value.downcast::<AXUIElement>())
+        };
+        Ok(super::merge_windows(
+            windows,
+            [window_at(1), window_at(2)],
+            same_element,
+        ))
+    }
+
+    /// What earlier sweeps in this process learned about one KakaoTalk pid:
+    /// the windows they reached (re-checked before reuse) and the target ids
+    /// they spent a whole budget on without reaching.
+    struct SweepMemo {
+        pid: i32,
+        reached: Vec<(u32, AXUIElement)>,
+        unreachable: HashSet<u32>,
+    }
+
+    thread_local! {
+        static SWEEP_MEMO: std::cell::RefCell<Option<SweepMemo>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// KakaoTalk windows on other Spaces that `listed` lacks, found with the
+    /// private remote-token API the way AltTab's `windowsByBruteForce` does:
+    /// build an element for each id from 0 within [`SWEEP_BUDGET`], keep one
+    /// only when `_AXUIElementGetWindow` names a target window and its role
+    /// is `AXWindow` (the window's buttons and tables name the same window),
+    /// and stop once every target is found or `enough` accepts a window.
+    /// Targets are KakaoTalk's off-screen normal windows in CoreGraphics'
+    /// list of all windows, so a sweep runs only while one is missing.
+    ///
+    /// Reads only, nothing is raised and the Space is not switched. Two
+    /// limits, both measured on macOS 26.5: an app mints an element id only
+    /// when it first hands the element to an Accessibility client, so a
+    /// window that left this Space before any client saw it has no id to
+    /// find (until it is the key or main window, which `listed` reads); and
+    /// `orderOut` (a closed main window) invalidates the window's element,
+    /// so a hidden window is not mistaken for one on another Space.
+    fn swept_windows(
+        app: &AXUIElement,
+        listed: &[AXUIElement],
+        enough: impl Fn(&AXUIElement) -> bool,
+    ) -> Vec<AXUIElement> {
+        let started = Instant::now();
+        let (Some(api), Some(pid)) = (remote_token_api(), app_pid(app)) else {
+            return Vec::new();
+        };
+        let Some(cg) = cg_windows(pid) else {
+            return Vec::new();
+        };
+        let in_hand: Vec<u32> = listed.iter().filter_map(window_id).collect();
+        SWEEP_MEMO.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|memo| memo.pid != pid) {
+                *slot = None;
+            }
+            let memo = slot.get_or_insert_with(|| SweepMemo {
+                pid,
+                reached: Vec::new(),
+                unreachable: HashSet::new(),
+            });
+            memo.reached.retain(|(id, window)| {
+                !in_hand.contains(id)
+                    && cg.iter().any(|seen| seen.id == *id && !seen.on_screen)
+                    && window_id(window) == Some(*id)
+                    && role(window) == "AXWindow"
+            });
+            let mut known = in_hand.clone();
+            known.extend(memo.reached.iter().map(|(id, _)| *id));
+            let mut remaining = super::sweep_targets(&cg, &known, &memo.unreachable);
+            if !remaining.is_empty() && !memo.reached.iter().any(|(_, window)| enough(window)) {
+                let deadline = started + SWEEP_BUDGET;
+                let targets = remaining.len();
+                let mut satisfied = false;
+                let tried = super::sweep_ids(
+                    || Instant::now() < deadline,
+                    |id| element_from_token(api, pid, id),
+                    |element| {
+                        let Some(id) = window_id(&element).filter(|id| remaining.contains(id))
+                        else {
+                            return false;
+                        };
+                        if role(&element) != "AXWindow" {
+                            return false;
+                        }
+                        remaining.remove(&id);
+                        satisfied = enough(&element);
+                        memo.reached.push((id, element));
+                        satisfied || remaining.is_empty()
+                    },
+                );
+                if !satisfied {
+                    memo.unreachable.extend(remaining.iter().copied());
+                }
+                trace(
+                    started,
+                    &format!(
+                        "remote-token sweep: {} of {targets} off-screen window(s) reached in ids 0..{tried}",
+                        targets - remaining.len()
+                    ),
+                );
+            }
+            memo.reached
+                .iter()
+                .map(|(_, window)| window.clone())
+                .collect()
+        })
+    }
+
+    /// Whether `window` is one of the windows of the Space being viewed.
+    fn on_this_space(app: &AXUIElement, window: &AXUIElement) -> bool {
+        app.windows()
+            .is_ok_and(|windows| windows.iter().any(|listed| same_element(&listed, window)))
+    }
+
     /// Find KakaoTalk's main chat-list window, as opposed to any individual
     /// open-chat windows (which are separate `AXWindow`s titled with the
     /// other party's — or your own, for the self chat — display name).
     ///
-    /// The Accessibility API only sees windows on the active Space, and
-    /// restoring a minimized or off-Space window automatically risks stealing
-    /// the user's foreground, so both cases are reported (with a fix) instead.
-    /// A signed-out KakaoTalk shows one `로그인` window that reuses the main
-    /// window's identifier.
+    /// `AXWindows` lists only the active Space's windows. One on another
+    /// Space is reached where it is, as KakaoTalk's key or main window or by
+    /// a remote-token sweep that stops at the main window, never by
+    /// switching Spaces. Restoring a minimized window automatically was
+    /// seen to steal the user's foreground, so that is reported (with a fix)
+    /// instead. A signed-out KakaoTalk shows one `로그인` window that reuses
+    /// the main window's identifier.
     fn find_main_window(app: &AXUIElement) -> Result<AXUIElement> {
-        let windows = app
-            .windows()
-            .map_err(|e| anyhow!("AXWindows read failed: {e:?}"))?;
+        let windows = listed_windows(app)?;
         let title_of = |window: &AXUIElement| window.title().map(|t| t.to_string()).ok();
+        let is_main = |window: &AXUIElement| {
+            attr_as_string(window, "AXIdentifier").as_deref() == Some(MAIN_WINDOW_IDENTIFIER)
+        };
         let signed_out = || {
             coded(
                 ErrorCode::KakaotalkSignedOut,
                 "KakaoTalk is signed out (its only window is the 로그인 sign-in window)",
             )
         };
-        let Some(window) = windows
-            .iter()
-            .find(|w| attr_as_string(w, "AXIdentifier").as_deref() == Some("Main Window"))
-            .map(|w| w.clone())
-        else {
-            if windows
-                .iter()
-                .any(|w| title_of(&w).is_some_and(|t| super::is_login_window_title(&t)))
-            {
-                return Err(signed_out());
+        let window = match windows.iter().find(|w| is_main(w)) {
+            Some(window) => window.clone(),
+            None => {
+                if windows
+                    .iter()
+                    .any(|w| title_of(w).is_some_and(|t| super::is_login_window_title(&t)))
+                {
+                    return Err(signed_out());
+                }
+                swept_windows(app, &windows, is_main)
+                    .into_iter()
+                    .find(|w| is_main(w))
+                    .ok_or_else(|| {
+                        coded(
+                            ErrorCode::MainWindowNotVisible,
+                            "could not find KakaoTalk's main chat-list window (closed, or on another Space where no Accessibility client has seen it yet)",
+                        )
+                    })?
             }
-            return Err(coded(
-                ErrorCode::MainWindowNotVisible,
-                "could not find KakaoTalk's main chat-list window (closed, or on another Space)",
-            ));
         };
         if title_of(&window).is_some_and(|t| super::is_login_window_title(&t)) {
             return Err(signed_out());
         }
 
-        // A minimized window still shows up here (unlike one on another
-        // Space), but restoring it via AXMinimized=false was observed to bring
-        // KakaoTalk to the foreground, so it is deliberately not restored.
+        // A minimized window is listed by AXWindows on any Space, but
+        // restoring it via AXMinimized=false was observed to bring KakaoTalk
+        // to the foreground, so it is deliberately not restored.
         if attr_as_bool(&window, "AXMinimized") == Some(true) {
             return Err(coded(
                 ErrorCode::MainWindowMinimized,
@@ -3994,7 +4439,8 @@ end run
 
     /// The main window, showing it first through the app's own menu bar
     /// (`창 > 채팅`, performed by AX without activating KakaoTalk) when it is
-    /// merely hidden. A window on another Space stays a reported error.
+    /// merely hidden. One on another Space is used where it is when
+    /// [`find_main_window`] reaches it; only otherwise is it shown.
     fn find_or_show_main_window(app: &AXUIElement) -> Result<AXUIElement> {
         let error = match find_main_window(app) {
             Ok(window) => return Ok(window),
@@ -4817,10 +5263,11 @@ end run
         text.ok_or_else(|| anyhow!("the 전체보기 dialog shows no text"))
     }
 
+    /// KakaoTalk's windows for dialog lookups: [`listed_windows`], so a
+    /// dialog that became the key window on another Space counts too. No
+    /// remote-token sweep: callers poll this every 50 ms.
     fn app_windows(app: &AXUIElement) -> Vec<AXUIElement> {
-        app.windows()
-            .map(|list| list.iter().map(|w| (*w).clone()).collect())
-            .unwrap_or_default()
+        listed_windows(app).unwrap_or_default()
     }
 
     fn same_element(left: &AXUIElement, right: &AXUIElement) -> bool {
@@ -5018,22 +5465,26 @@ end run
     /// Find exactly one already-open chat window by its full title. A substring
     /// match is unsafe here: an allowed target named `Alice` must never reuse an
     /// unrelated `Alice & Bob` window, and duplicate exact titles are ambiguous.
+    /// A window on another Space is found where it is ([`listed_windows`],
+    /// then a remote-token sweep only when no listed window matches).
     fn find_chat_window(app: &AXUIElement, chat_display_name: &str) -> Result<Option<AXUIElement>> {
-        let windows = app
-            .windows()
-            .map_err(|error| anyhow!("AXWindows read failed: {error:?}"))?;
-        let titles: Vec<Option<String>> = windows
-            .iter()
-            .map(|window| window.title().map(|title| title.to_string()).ok())
-            .collect();
-        match super::match_chat_row(&titles, chat_display_name) {
-            super::ChatMatch::NotFound => Ok(None),
-            super::ChatMatch::Found(index) => windows
-                .get(index as isize)
-                .map(|window| (*window).clone())
-                .map(Some)
-                .ok_or_else(|| anyhow!("matched chat window disappeared during AX lookup")),
-            super::ChatMatch::Ambiguous(count) => Err(coded(
+        let listed = listed_windows(app)?;
+        let title_of = |window: &AXUIElement| window.title().map(|title| title.to_string()).ok();
+        let titles: Vec<Option<String>> = listed.iter().map(title_of).collect();
+        let mut swept = Vec::new();
+        let pick = super::pick_window(
+            &titles,
+            || {
+                swept = swept_windows(app, &listed, |_| false);
+                swept.iter().map(title_of).collect()
+            },
+            chat_display_name,
+        );
+        match pick {
+            super::WindowPick::NotFound => Ok(None),
+            super::WindowPick::Listed(index) => Ok(listed.get(index).cloned()),
+            super::WindowPick::Swept(index) => Ok(swept.get(index).cloned()),
+            super::WindowPick::Ambiguous(count) => Err(coded(
                 ErrorCode::ChatAmbiguous,
                 format!(
                     "chat name '{chat_display_name}' matches {count} open windows exactly — ambiguous, refusing to guess"
@@ -8580,19 +9031,18 @@ end run
         crate::util::escape_terminal_text(&parts.join(" · "))
     }
 
-    /// KakaoTalk's normal (layer-0) windows across all Spaces and how many are
-    /// on screen now, from the public CoreGraphics window list (owner pid and
-    /// layer need no Screen Recording permission; titles would).
-    fn cg_window_counts(pid: i32) -> Option<(usize, usize)> {
+    /// KakaoTalk's windows across all Spaces (and hidden ones) from the
+    /// public CoreGraphics window list. Owner pid, id, layer and the
+    /// on-screen flag need no Screen Recording permission; titles would.
+    fn cg_windows(pid: i32) -> Option<Vec<super::CgWindow>> {
         use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
         use core_foundation::number::CFNumber;
         use core_graphics::window::{
             copy_window_info, kCGNullWindowID, kCGWindowIsOnscreen, kCGWindowLayer,
-            kCGWindowListOptionAll, kCGWindowOwnerPID,
+            kCGWindowListOptionAll, kCGWindowNumber, kCGWindowOwnerPID,
         };
         let windows = copy_window_info(kCGWindowListOptionAll, kCGNullWindowID)?;
-        let (mut total, mut onscreen) = (0, 0);
-        for window in windows.iter() {
+        let windows = windows.iter().filter_map(|window| {
             let info: CFDictionary<CFString, CFType> =
                 unsafe { CFDictionary::wrap_under_get_rule(*window as CFDictionaryRef) };
             let value = |key| {
@@ -8604,21 +9054,31 @@ end run
                     .and_then(|value| value.downcast::<CFNumber>())
                     .and_then(|number| number.to_i64())
             };
-            if number(unsafe { kCGWindowOwnerPID }) != Some(pid.into())
-                || number(unsafe { kCGWindowLayer }) != Some(0)
-            {
-                continue;
+            if number(unsafe { kCGWindowOwnerPID }) != Some(pid.into()) {
+                return None;
             }
-            total += 1;
-            if value(unsafe { kCGWindowIsOnscreen })
-                .and_then(|value| value.downcast::<CFBoolean>())
-                .map(bool::from)
-                == Some(true)
-            {
-                onscreen += 1;
-            }
-        }
-        Some((total, onscreen))
+            Some(super::CgWindow {
+                id: u32::try_from(number(unsafe { kCGWindowNumber })?).ok()?,
+                layer: number(unsafe { kCGWindowLayer })?,
+                // Absent, not false, for a window that is not on screen.
+                on_screen: value(unsafe { kCGWindowIsOnscreen })
+                    .and_then(|value| value.downcast::<CFBoolean>())
+                    .map(bool::from)
+                    == Some(true),
+            })
+        });
+        Some(windows.collect())
+    }
+
+    /// KakaoTalk's normal (layer-0) windows across all Spaces and how many are
+    /// on screen now.
+    fn cg_window_counts(pid: i32) -> Option<(usize, usize)> {
+        let windows = cg_windows(pid)?;
+        let normal = || windows.iter().filter(|window| window.layer == 0);
+        Some((
+            normal().count(),
+            normal().filter(|window| window.on_screen).count(),
+        ))
     }
 
     /// Record the Dock's "Assign To → All Desktops" for KakaoTalk and restart
@@ -8927,10 +9387,45 @@ end run
         )
     }
 
+    /// How many KakaoTalk windows on other Spaces this process reaches, and
+    /// how. Titles stay out of it: they are chat names.
+    fn other_spaces_check(app: &AXUIElement) -> super::AxCheck {
+        let started = Instant::now();
+        let here: Vec<AXUIElement> = app
+            .windows()
+            .map(|windows| windows.iter().map(|window| (*window).clone()).collect())
+            .unwrap_or_default();
+        let listed = listed_windows(app).unwrap_or_default();
+        let key_or_main = listed
+            .iter()
+            .filter(|window| !here.iter().any(|seen| same_element(seen, window)))
+            .count();
+        let swept = swept_windows(app, &listed, |_| false).len();
+        let ms = started.elapsed().as_millis();
+        let detail = match (other_space_lookup_available(), key_or_main + swept) {
+            (true, 0) => format!(
+                "none reached ({ms} ms). A window that left this Space before any Accessibility client saw it is reached only once it has been shown here"
+            ),
+            (true, reached) => format!(
+                "{reached} reached without switching Spaces ({key_or_main} as KakaoTalk's key or main window, {swept} by the private remote-token lookup; {ms} ms)"
+            ),
+            (false, _) => format!(
+                "{key_or_main} reached as KakaoTalk's key or main window; the private remote-token lookup is unavailable on this macOS"
+            ),
+        };
+        check(
+            "Windows on other Spaces",
+            super::AxCheckStatus::Ok,
+            detail,
+            None,
+        )
+    }
+
     /// Read-only readiness checks for `doctor`/`init`: permission, the signed
-    /// KakaoTalk process, sign-in, the main window on this Space, the chat
-    /// list and its search field, and (with `chat`) what a send to that open
-    /// chat window would use. Nothing is pressed, opened or raised.
+    /// KakaoTalk process, sign-in, the main window (on any Space), the windows
+    /// reached on other Spaces, the chat list and its search field, and (with
+    /// `chat`) what a send to that open chat window would use. Nothing is
+    /// pressed, opened or raised.
     pub fn diagnose(chat: Option<&str>) -> Vec<super::AxCheck> {
         use super::AxCheckStatus::{Fail, Ok as Pass, Warn};
         let mut checks = Vec::new();
@@ -8949,15 +9444,31 @@ end run
             "granted to this process",
             None,
         ));
-        checks.push(match super::kakaotalk_spaces_assignment() {
-            Some(true) => check("Spaces", Pass, "KakaoTalk is assigned to All Desktops", None),
-            _ => check(
-                "Spaces",
-                Warn,
-                "KakaoTalk is not assigned to All Desktops; its windows on other Spaces are invisible to Accessibility",
-                Some(ErrorCode::NotOnAllSpaces),
-            ),
-        });
+        checks.push(
+            match (
+                super::kakaotalk_spaces_assignment(),
+                other_space_lookup_available(),
+            ) {
+                (Some(true), _) => check(
+                    "Spaces",
+                    Pass,
+                    "KakaoTalk is assigned to All Desktops",
+                    None,
+                ),
+                (_, true) => check(
+                    "Spaces",
+                    Pass,
+                    "KakaoTalk is not assigned to All Desktops; its windows on other Spaces are reached through the private remote-token lookup",
+                    None,
+                ),
+                (_, false) => check(
+                    "Spaces",
+                    Warn,
+                    "KakaoTalk is not assigned to All Desktops, and this macOS lacks the private remote-token lookup, so its windows on other Spaces are invisible to Accessibility",
+                    Some(ErrorCode::NotOnAllSpaces),
+                ),
+            },
+        );
 
         let pid = match find_kakaotalk_pid() {
             Ok(pid) => pid,
@@ -8998,7 +9509,7 @@ end run
             }
             Err(error) => {
                 checks.push(check("KakaoTalk sign-in", Pass, "signed in", None));
-                let mut main = failed("Main window (this Space)", &error);
+                let mut main = failed("Main window", &error);
                 let visible = app.windows().map(|windows| windows.len()).unwrap_or(0);
                 if let Some((total, onscreen)) = cg_window_counts(pid) {
                     main.detail.push_str(&format!(
@@ -9006,15 +9517,21 @@ end run
                     ));
                 }
                 checks.push(main);
+                checks.push(other_spaces_check(&app));
             }
             Ok(main_window) => {
                 checks.push(check("KakaoTalk sign-in", Pass, "signed in", None));
                 checks.push(check(
-                    "Main window (this Space)",
+                    "Main window",
                     Pass,
-                    "visible and not minimized",
+                    if on_this_space(&app, &main_window) {
+                        "visible on this Space and not minimized"
+                    } else {
+                        "on another Space, reached there without switching Spaces"
+                    },
                     None,
                 ));
+                checks.push(other_spaces_check(&app));
                 match snapshot_shallow(&main_window) {
                     Err(error) => checks.push(failed("Chat list", &error)),
                     Ok(snap) => {
@@ -9071,7 +9588,11 @@ end run
         checks.push(check(
             "Chat window",
             Pass,
-            format!("open, titled exactly '{chat}'"),
+            if on_this_space(&app, &window) {
+                format!("open, titled exactly '{chat}'")
+            } else {
+                format!("open on another Space, titled exactly '{chat}'")
+            },
             None,
         ));
         let elements = match inspect_chat_window(&window) {
@@ -9216,9 +9737,10 @@ end run
 pub use imp::{
     assign_kakaotalk_to_all_spaces, birthday_friends, block_channel_via_ax, delete_via_ax,
     diagnose, edit_via_ax, export_via_ax, friend_via_ax, launch_kakaotalk_in_background,
-    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax, react_via_ax,
-    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
-    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
+    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax,
+    other_space_lookup_available, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
+    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
+    ChatListRow,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -9374,6 +9896,10 @@ mod stub {
         Err(anyhow!("Spaces assignment is only supported on macOS"))
     }
 
+    pub fn other_space_lookup_available() -> bool {
+        false
+    }
+
     pub fn launch_kakaotalk_in_background() -> Result<()> {
         Err(anyhow!("KakaoTalk for macOS can only be launched on macOS"))
     }
@@ -9424,9 +9950,10 @@ mod stub {
 pub use stub::{
     assign_kakaotalk_to_all_spaces, birthday_friends, block_channel_via_ax, delete_via_ax,
     diagnose, edit_via_ax, export_via_ax, friend_via_ax, launch_kakaotalk_in_background,
-    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax, react_via_ax,
-    read_via_ax, rename_chat_via_ax, reply_via_ax, scrape_chat_list, search_friends,
-    send_attachment_via_ax, send_via_ax_classified, BubbleAction, ChatListRow,
+    leave_chat_via_ax, login_via_ax, mark_read_via_ax, open_friend_chat_via_ax,
+    other_space_lookup_available, react_via_ax, read_via_ax, rename_chat_via_ax, reply_via_ax,
+    scrape_chat_list, search_friends, send_attachment_via_ax, send_via_ax_classified, BubbleAction,
+    ChatListRow,
 };
 
 /// Turn a classified outcome into the caller-facing result. `Uncertain` must

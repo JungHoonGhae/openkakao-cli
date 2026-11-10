@@ -292,8 +292,9 @@ pub fn cmd_doctor(
         }
     }
 
-    // 2b. Login-free AX path: permission, sign-in, main window on this Space,
-    // chat-list search field, and (with --chat) the open chat window.
+    // 2b. Login-free AX path: permission, sign-in, main window (on any Space),
+    // windows reached on other Spaces, chat-list search field, and (with
+    // --chat) the open chat window.
     // Read-only: nothing is pressed, opened, or raised.
     checks.extend(ax_checks(chat));
     checks.push(Check {

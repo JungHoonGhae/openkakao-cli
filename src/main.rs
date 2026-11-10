@@ -907,13 +907,15 @@ enum Commands {
     /// First-run setup: AX readiness checks, send allowlist, agent skill
     #[command(
         long_about = "First-run setup for the login-free AX path. Shows read-only readiness checks \
-                      (Accessibility, sign-in, main window on this Space, chat-list search), writes \
-                      ~/.config/openkakao/config.toml (chats are only allowlisted from names you type \
-                      or pass with --allow-chat; allowlisting one also sets allow_ax_send = true), and \
-                      installs the openkakao-cli agent skill (npx skills add, or a direct SKILL.md \
-                      download when npx is missing). It offers to launch KakaoTalk in the background \
-                      and to assign it to All Desktops (the Dock restarts once; non-interactive runs \
-                      do this only with --all-spaces). Safe to re-run."
+                      (Accessibility, sign-in, main window, windows on other Spaces, chat-list \
+                      search), writes ~/.config/openkakao/config.toml (chats are only allowlisted \
+                      from names you type or pass with --allow-chat; allowlisting one also sets \
+                      allow_ax_send = true), and installs the openkakao-cli agent skill (npx skills \
+                      add, or a direct SKILL.md download when npx is missing). It offers to launch \
+                      KakaoTalk in the background. Windows on other Spaces are reached without \
+                      assigning KakaoTalk to All Desktops; only a macOS without that lookup is \
+                      offered the assignment (the Dock restarts once; non-interactive runs do this \
+                      only with --all-spaces). Safe to re-run."
     )]
     Init {
         /// Non-interactive: accept defaults (no skill unless --skill is passed; KakaoTalk is not launched)
