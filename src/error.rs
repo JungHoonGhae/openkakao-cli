@@ -182,9 +182,12 @@ impl ErrorCode {
                  from the keychain), or sign in on this Mac, then re-run."
             }
             Self::MainWindowNotVisible => {
-                "Open KakaoTalk's main window on the Space you are viewing. If it lives on another \
-                 Space, assign KakaoTalk to all desktops once: `openkakao-cli init --all-spaces` \
-                 (the same as Dock → Options → Assign To → All Desktops)."
+                "Open KakaoTalk's main window (창 > 채팅). One on another desktop is used there \
+                 without switching, once any openkakao-cli command (or another Accessibility \
+                 client) has run while it was showing: view that desktop once, then re-run from \
+                 anywhere. Only if `openkakao-cli doctor` says this macOS lacks that lookup, \
+                 assign KakaoTalk to All Desktops: `openkakao-cli init --all-spaces` (Dock → \
+                 Options → Assign To → All Desktops)."
             }
             Self::MainWindowMinimized => {
                 "Un-minimize KakaoTalk's main window yourself (click its Dock icon); restoring it \
@@ -200,9 +203,10 @@ impl ErrorCode {
             }
             Self::ChatWindowNotOpen => {
                 "Open the chat window in KakaoTalk once and keep it open: open windows are read and \
-                 sent to without touching your focus. Or re-run with --open-if-needed, which opens \
-                 it from the chat list's context menu without raising KakaoTalk (this marks the \
-                 chat as read)."
+                 sent to without touching your focus, on any desktop once an openkakao-cli \
+                 command has run while the window was showing. Or re-run with --open-if-needed, \
+                 which opens it from the chat list's context menu without raising KakaoTalk \
+                 (this marks the chat as read)."
             }
             Self::ChatNotFound => {
                 "Only rows KakaoTalk has loaded are visible, and the list can stay stale until the \

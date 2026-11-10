@@ -181,7 +181,14 @@ function run(argv) {
 
 ## Window visibility across Spaces
 
-The Accessibility API does not list windows that sit on another Space. The Dock option "Assign To > All Desktops" fixes it, and it is just a preference:
+`AXWindows` does not list windows that sit on another Space. The CLI (1.19.0 and later) reaches them anyway, read-only and without switching Spaces, as AltTab does (measured on macOS 26.5, KakaoTalk 26.9):
+
+- `AXFocusedWindow` and `AXMainWindow` on the application element are not filtered by Space, so KakaoTalk's last active window is one attribute read away.
+- Any other window: `_AXUIElementCreateWithRemoteToken` (private, HIServices) builds an element from a 20-byte token, pid (i32) | 0 (i32) | `0x636f636f` "coco" (i32) | element id (u64), little-endian. Try ids from 0 under a time budget (250 ms; about 15 µs per id), and keep an element only when `_AXUIElementGetWindow` puts it in one of KakaoTalk's off-screen windows from `CGWindowListCopyWindowInfo(kCGWindowListOptionAll)` and its role is `AXWindow` (a window's buttons and tables answer with the same window id).
+- Element ids are minted only when an element is first handed to an Accessibility client, so a window no client has seen has no id yet. KakaoTalk's windows sat at ids 43 and 85, and chat-list rows are indexed children that take no ids, so ids stay low.
+- `orderOut` (a closed main window) invalidates the window's element: a hidden window does not come back as one on another Space. KakaoTalk also keeps nine hidden helper windows (30/39 px bars, a 64 px square) that never resolve, so a lookup that misses spends its whole budget once.
+
+Only where that lookup is missing, the Dock option "Assign To > All Desktops" makes the windows visible on every Space. KakaoTalk's windows then follow every desktop switch, so ask the user first:
 
 ```bash
 defaults write com.apple.spaces app-bindings -dict-add com.kakao.kakaotalkmac AllSpaces

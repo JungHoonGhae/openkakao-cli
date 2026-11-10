@@ -330,9 +330,13 @@ pub fn cmd_init(opts: InitOptions) -> Result<()> {
             fixes.push("launched KakaoTalk in the background");
         }
     }
+    // Windows on other Spaces are reached through the remote-token lookup
+    // where macOS has it, so All Desktops (which drags KakaoTalk along on
+    // every desktop switch) is offered only where it does not.
     if crate::ax_send::kakaotalk_spaces_assignment() != Some(true) {
         let assign = opts.all_spaces
             || (interactive
+                && !crate::ax_send::other_space_lookup_available()
                 && {
                     eprint!(
                     "   Assign KakaoTalk to All Desktops so its windows stay visible on every Space?\n   (same as Dock → Options → Assign To → All Desktops; the Dock restarts once) [y/N] "

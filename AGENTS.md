@@ -101,6 +101,17 @@ foreground app:
 - Opening a closed chat (`--open-if-needed`): `AXShowMenu` on the chat-list row
   and `AXPress` `채팅방 열기`. A hidden main window is shown with `AXPress` on
   the menu bar's `창 > 채팅`.
+- Windows on another Space: `AXWindows` lists only the active Space, so the
+  window lookups also read the app's `AXFocusedWindow`/`AXMainWindow` (not
+  filtered by Space) and, when the window is still missing, find it with the
+  private `_AXUIElementCreateWithRemoteToken` lookup AltTab uses: element ids
+  from 0 for at most 250 ms, kept only when `_AXUIElementGetWindow` places
+  the element in an off-screen KakaoTalk window and its role is `AXWindow`.
+  Read-only; nothing is raised and the Space is not switched. A window no
+  Accessibility client has seen since it left the active Space has no
+  element id yet and stays unreachable. Measured on macOS 26.5 with every
+  KakaoTalk window on another desktop: the main window was found in 4 ms
+  and its chat list read. Sends and menus there are not yet verified.
 - Reply/edit (experimental `local-reply`, `local-edit`): `AXShowMenu` on the
   bubble's `AXTextArea`. The menu is found in KakaoTalk's menu-layer window
   (CoreGraphics layer ≥ 100, matched by pid, then hit-tested). Press `답장` or
@@ -138,8 +149,10 @@ openkakao-cli init --yes --allow-chat "exact chat name" --skill claude --json
 ```
 
 `init` only allowlists the names it is given, and re-running it changes
-nothing that is already set. A non-interactive run assigns KakaoTalk to All
-Desktops only with `--all-spaces`, which restarts the Dock once.
+nothing that is already set. Windows on other Spaces are reached without
+assigning KakaoTalk to All Desktops (see Focus Model), so `init` offers that
+only on a macOS without the private lookup; `--all-spaces` still assigns it
+and restarts the Dock once.
 
 ## Unattended Mode
 

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-11-10
+
+### Added
+- **KakaoTalk windows on another desktop are used where they are.** `AXWindows` lists only the active Space's windows, so a main or chat window on another desktop was `main_window_not_visible` / `chat_window_not_open` unless KakaoTalk was assigned to All Desktops, which drags its windows along on every desktop switch. Window lookups now also read KakaoTalk's key and main window (AppKit does not filter those by Space) and, when the window is still missing, find it with the private `_AXUIElementCreateWithRemoteToken` lookup that AltTab uses: element ids are tried from 0 for at most 250 ms, and an element counts only when `_AXUIElementGetWindow` places it in one of KakaoTalk's off-screen CoreGraphics windows and its role is `AXWindow`. It only reads; nothing is raised and the Space is not switched. The private calls are resolved at run time, so a macOS without them loses only this lookup. With every KakaoTalk window on another desktop, `doctor` found the main window in 4 ms and read its 712-row chat list. Limits measured on macOS 26.5: an app gives an element an id only when an Accessibility client first sees it, so a window that went to another desktop before any client saw it stays unreachable until it is shown once (unless it was KakaoTalk's last active window), and a lookup that misses costs up to 250 ms once per command (KakaoTalk keeps nine hidden helper windows that never resolve).
+- **`doctor` says where the windows are.** `Main window` and `Chat window` (`--chat`) say when the window is on another Space, and a new `Windows on other Spaces` check counts the windows reached there and how, without their titles.
+
+### Changed
+- **All Desktops is no longer suggested where the lookup works.** `doctor`'s `Spaces` check passes without it, and `init` offers the assignment only on a macOS without the lookup (`--all-spaces` still assigns it).
+- Two open windows with the same exact title are `chat_ambiguous` also when one of them is KakaoTalk's key or main window on another desktop.
+
+### Fixed
+- **A signed-out KakaoTalk whose 로그인 window is on another desktop is reported as signed out.** The sign-in check saw only the active Space's windows, so with the 로그인 window elsewhere `doctor` said `signed in` and commands that need the main window failed with `main_window_not_visible`. The window is now reached where it is and the command stops with `kakaotalk_signed_out` (measured on the MacBook Air, macOS 26.5.2: found in ids 0..44, 9 ms).
+
 ## [1.18.0] - 2026-11-08
 
 ### Added

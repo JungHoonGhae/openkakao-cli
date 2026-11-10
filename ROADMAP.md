@@ -4,9 +4,9 @@
 
 `ax-watch` polls the KakaoTalk chat list via the macOS Accessibility API and
 infers "a new message arrived" from list-level signals (unread count, preview).
-That is a lossy proxy: it needs the main window open/visible on the active
-Space, only sees loaded chat rows, and can't cleanly tell your own sends from
-incoming messages.
+That is a lossy proxy: it needs the main window open (on the active Space,
+or on another one the remote-token lookup reaches), only sees loaded chat
+rows, and can't cleanly tell your own sends from incoming messages.
 
 The landed answer is **`notif-watch`**: poll the macOS Notification Center DB
 (`~/Library/Group Containers/group.com.apple.usernoted/db2/db`, plaintext
@@ -107,6 +107,35 @@ follow-ups, all to be verified on a signed-in Mac before relying on them:
 - Typing `@` in a group chat opens a member-suggestion `AXTable` inside the
   chat window. Lookups take the message table before any insertion, but
   `ax-read` on a window with a pending `@` draft could pick the wrong table.
+
+### Windows on other Spaces (remote-token lookup)
+
+Window lookups reach KakaoTalk windows on other Spaces through the app's
+`AXFocusedWindow`/`AXMainWindow` and the private
+`_AXUIElementCreateWithRemoteToken` sweep (AltTab's method, 250 ms), so All
+Desktops is no longer needed. Measured on macOS 26.5: the token layout, ids
+minted only when an element is first handed to a client (KakaoTalk's
+windows at 43 and 85; chat-list rows take none), `orderOut` invalidating a
+hidden window's element, and 14.6 µs per id on the Air. With every
+KakaoTalk window on another desktop (`AXWindows` empty), `doctor` found the
+main window in 4.3 ms (ids 0..43), read its 712-row chat list, and reached
+the chat window as the key window. To verify on a device with KakaoTalk on
+another desktop:
+
+- `ax-read`, `doctor --chat` and a text send to the memo chat there.
+- `AXShowMenu` there (`--open-if-needed`, reply, edit, delete, react): does
+  the menu show on the active desktop where it is found, or not at all
+  (`menu_not_found`)? Where does a chat window opened from there appear?
+- Dialogs and the file open panel opened from a window there.
+- A window that left the active Space before any client saw it has no
+  element id; only the key/main window read reaches it.
+- Ids past the budget (a long-lived KakaoTalk; the highest live id was 113
+  after 15 minutes) would need a per-pid cache of window ids seen while the
+  windows were visible. Not built until a device shows the need.
+- A lookup that misses costs the whole budget once per command, because
+  KakaoTalk's nine hidden helper windows never resolve. The private
+  `SLSCopySpacesForWindows` would tell them apart (no Space) at the cost of a
+  second private API.
 
 ### Follow-ups from the 2026-11-06 device run
 
