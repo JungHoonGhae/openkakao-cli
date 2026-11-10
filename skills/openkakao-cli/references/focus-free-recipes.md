@@ -181,7 +181,7 @@ function run(argv) {
 
 ## Window visibility across Spaces
 
-`AXWindows` does not list windows that sit on another Space. The CLI (after 1.18.0) reaches them anyway, read-only and without switching Spaces, as AltTab does (measured on macOS 26.5, KakaoTalk 26.9):
+`AXWindows` does not list windows that sit on another Space. The CLI (1.19.0 and later) reaches them anyway, read-only and without switching Spaces, as AltTab does (measured on macOS 26.5, KakaoTalk 26.9):
 
 - `AXFocusedWindow` and `AXMainWindow` on the application element are not filtered by Space, so KakaoTalk's last active window is one attribute read away.
 - Any other window: `_AXUIElementCreateWithRemoteToken` (private, HIServices) builds an element from a 20-byte token, pid (i32) | 0 (i32) | `0x636f636f` "coco" (i32) | element id (u64), little-endian. Try ids from 0 under a time budget (250 ms; about 15 µs per id), and keep an element only when `_AXUIElementGetWindow` puts it in one of KakaoTalk's off-screen windows from `CGWindowListCopyWindowInfo(kCGWindowListOptionAll)` and its role is `AXWindow` (a window's buttons and tables answer with the same window id).

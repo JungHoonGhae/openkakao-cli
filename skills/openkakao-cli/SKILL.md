@@ -1,7 +1,7 @@
 ---
 name: openkakao-cli
 description: >-
-  Work with OpenKakao CLI (`openkakao-cli` 1.18.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), list friends' birthdays (`ax-friends --birthdays`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "kakao birthday", "카톡 생일", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
+  Work with OpenKakao CLI (`openkakao-cli` 1.19.0+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), list friends' birthdays (`ax-friends --birthdays`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "kakao birthday", "카톡 생일", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
 ---
 
 # OpenKakao CLI
@@ -135,7 +135,7 @@ Rules: find the window with `agent-desktop list-windows --app KakaoTalk`, act on
 
 ## Spaces (virtual desktops)
 
-AX lists only the windows of the active Space. Releases after 1.18.0 also reach KakaoTalk's windows on other desktops where they are, without switching to them: KakaoTalk's last active window directly, any other through a private Accessibility lookup (the remote-token method AltTab uses, at most 250 ms). So leave KakaoTalk on its own desktop; do not assign it to All Desktops for this.
+AX lists only the windows of the active Space. From 1.19.0 the CLI also reaches KakaoTalk's windows on other desktops where they are, without switching to them: KakaoTalk's last active window directly, any other through a private Accessibility lookup (the remote-token method AltTab uses, at most 250 ms). So leave KakaoTalk on its own desktop; do not assign it to All Desktops for this.
 
 - A window counts once an Accessibility client has seen it: one that went to another desktop before any openkakao-cli command ran while it was showing stays `main_window_not_visible` / `chat_window_not_open` until the user views it once (or uses it last).
 - `doctor` says which windows are on another Space (`Main window`, `Chat window` with `--chat`, and the count in `Windows on other Spaces`).
