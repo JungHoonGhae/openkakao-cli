@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **One-line install.** `curl -fsSL https://raw.githubusercontent.com/JungHoonGhae/openkakao-cli/main/install.sh | sh` downloads the latest release binary for this Mac (Apple Silicon or Intel, also from a shell under Rosetta), checks it against the release's SHA-256 file and puts it in `~/.local/bin` (`OPENKAKAO_INSTALL_DIR` picks another folder, `OPENKAKAO_VERSION` a release tag). Running it again updates the binary. Homebrew still works.
+
+### Changed
+- **The READMEs start with install, a quick start and a command table**, and cover what was added through 1.19.2: birthdays, leaving chats, blocking ad channels, windows on other desktops.
+
 ## [1.19.2] - 2026-11-11
 
 ### Fixed
