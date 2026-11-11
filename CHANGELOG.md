@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.19.3] - 2026-11-12
 
+### Added
+- **One-line install.** `curl -fsSL https://raw.githubusercontent.com/JungHoonGhae/openkakao-cli/main/install.sh | sh` downloads the latest release binary for this Mac (Apple Silicon or Intel, also from a shell under Rosetta), checks it against the release's SHA-256 file and puts it in `~/.local/bin` (`OPENKAKAO_INSTALL_DIR` picks another folder, `OPENKAKAO_VERSION` a release tag). Running it again updates the binary. Homebrew still works.
+
+### Changed
+- **The READMEs start with install, a quick start and a command table**, and cover what was added through 1.19.2: birthdays, leaving chats, blocking ad channels, windows on other desktops.
+
 ### Fixed
 - **A cursor that only rests where a context menu opens no longer stops the command.** Every command that presses a context-menu item (`--open-if-needed`, `local-reply`, `local-edit`, `local-delete`, `local-react`, `local-mark-read`, `local-leave-chat`, `ax-friend`) stopped with `user_active` whenever the mouse cursor was over the menu it had opened, so that a click of yours could not land on `삭제` or `채팅방 나가기`. On a Mac nobody was using, with the cursor left over KakaoTalk's chat list, the menu opened under it on every try, and `--open-if-needed` could not open a chat until someone moved the mouse (seen 380 s after the last keyboard or mouse input, on macOS 26.5.2 with KakaoTalk 26.8.0). The cursor now stops the press only while the keyboard or mouse was used within the last 2 seconds. An idle time that cannot be read still stops it.
 - **The `fix` of `user_active` fits all of its causes.** It spoke only of a `--fallback-keys` route waiting to raise KakaoTalk, so for a menu in the way it said to retry when idle or to lower `--wait-idle`, and neither changed anything. It now also says that a menu left open closes with a click elsewhere (never Esc), and that `--wait-idle` changes only that raise wait.
