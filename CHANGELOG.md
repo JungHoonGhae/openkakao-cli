@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.2] - 2026-11-11
+
+### Fixed
+- **`local-reply` works in group chats where KakaoTalk names the reply item 댓글.** KakaoTalk 26.9 offers threaded replies in group chats: the bubble menu says 댓글 instead of 답장, the composer reads 「댓글 메시지 입력」 and the banner 「…에게 댓글」, so `local-reply` stopped with `menu_not_found`. It now presses 답장, or 댓글 when that is what the menu has, and accepts both composer modes (measured on macOS 26.5.2, KakaoTalk 26.9; 1:1 chats still say 답장).
+
+### Notes
+- In 댓글 mode the path was measured up to the composer, in a rehearsal that did not send. Whether KakaoTalk shows the sent comment in the chat's own message list, which is what verifies the send, is not measured yet: if it does not, the command ends with `delivery_uncertain`, so read the chat before anything else and never send it again blindly.
+- The agent skill now says to answer one message with `local-reply` instead of a new message, and that `@이름` is plain text: openkakao cannot create a mention that notifies.
+
 ## [1.19.1] - 2026-11-10
 
 ### Fixed
