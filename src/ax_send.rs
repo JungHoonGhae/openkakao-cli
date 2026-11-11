@@ -581,6 +581,19 @@ fn idle_decision(
     }
 }
 
+/// How long the keyboard and mouse must have been idle before a cursor over
+/// one of our context menus counts as resting there, in nobody's hand.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const RESTING_CURSOR_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a hand may be on the mouse: the keyboard or mouse was used within
+/// [`RESTING_CURSOR_IDLE`]. An unreadable idle time counts as in use: unlike a
+/// raise, a menu press has no read-back that would catch a stray click.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn cursor_may_be_in_hand(idle: Option<std::time::Duration>) -> bool {
+    idle.is_none_or(|idle| idle < RESTING_CURSOR_IDLE)
+}
+
 /// `HIDIdleTime` (nanoseconds) from `ioreg -c IOHIDSystem` output.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_hid_idle(ioreg: &str) -> Option<std::time::Duration> {
@@ -1269,6 +1282,16 @@ mod policy_tests {
             IdleDecision::Proceed
         );
         assert_eq!(idle_decision(None, two, zero, max), IdleDecision::Proceed);
+    }
+
+    #[test]
+    fn a_cursor_is_in_hand_only_while_the_keyboard_or_mouse_is_in_use() {
+        assert!(cursor_may_be_in_hand(Some(Duration::from_millis(400))));
+        assert!(!cursor_may_be_in_hand(Some(RESTING_CURSOR_IDLE)));
+        // A Mac nobody is at: the cursor only rests where the menu opened.
+        assert!(!cursor_may_be_in_hand(Some(Duration::from_secs(380))));
+        // Unlike the raise wait, an unreadable idle time does not proceed.
+        assert!(cursor_may_be_in_hand(None));
     }
 
     #[test]
@@ -4352,10 +4375,12 @@ end run
         Some((point.x, point.y))
     }
 
-    /// Whether the cursor is over one of KakaoTalk's menu-layer windows, where
-    /// a click of the user's could land on the item about to be pressed or a
-    /// destructive neighbour (삭제, 채팅방 나가기).
-    fn cursor_over_menu(app: &AXUIElement) -> bool {
+    /// Whether the cursor is over one of KakaoTalk's menu-layer windows with a
+    /// hand that may be on it, where a click of the user's could land on the
+    /// item about to be pressed or a destructive neighbour (삭제, 채팅방
+    /// 나가기). A cursor only resting there does not count: on a Mac nobody is
+    /// using, the menu opens under it every time.
+    fn cursor_in_hand_over_menu(app: &AXUIElement) -> bool {
         let Some(pid) = app_pid(app) else {
             return false;
         };
@@ -4364,7 +4389,7 @@ end run
         };
         menu_windows(pid).iter().any(|(left, top, width, height)| {
             x >= *left && x <= left + width && y >= *top && y <= top + height
-        })
+        }) && super::cursor_may_be_in_hand(hid_idle_time())
     }
 
     /// Wait (bounded) until no KakaoTalk menu-layer window is on screen, so a
@@ -4449,11 +4474,14 @@ end run
                 ),
             ));
         };
-        if cursor_over_menu(app) {
+        if cursor_in_hand_over_menu(app) {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
                 ErrorCode::UserActive,
-                format!("the mouse cursor is over the chat-list row's context menu; {label} was not pressed"),
+                format!(
+                    "the mouse cursor is over the chat-list row's context menu and the keyboard and mouse were not seen idle for {}s; {label} was not pressed",
+                    super::RESTING_CURSOR_IDLE.as_secs()
+                ),
             ));
         }
         let pressed = item
@@ -6988,12 +7016,13 @@ end run
                 ),
             ));
         };
-        if cursor_over_menu(app) {
+        if cursor_in_hand_over_menu(app) {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
                 ErrorCode::UserActive,
                 format!(
-                    "the mouse cursor is over the message's context menu; '{item}' was not pressed"
+                    "the mouse cursor is over the message's context menu and the keyboard and mouse were not seen idle for {}s; '{item}' was not pressed",
+                    super::RESTING_CURSOR_IDLE.as_secs()
                 ),
             ));
         }

@@ -278,8 +278,11 @@ impl ErrorCode {
                  Check the chat window and close a leftover reply/edit banner with its X (never Esc)."
             }
             Self::UserActive => {
-                "You were using the keyboard or mouse, so KakaoTalk was not raised. Retry when idle, \
-                 or lower the wait with --wait-idle <secs> (0 disables it)."
+                "The keyboard, the mouse or a KakaoTalk menu was in use, so nothing was pressed and \
+                 KakaoTalk was not raised. Retry once the keyboard and mouse have been idle for a few \
+                 seconds; a KakaoTalk menu left open closes with a click elsewhere (never Esc). \
+                 --wait-idle <secs> (0 disables it) only changes the wait before a --fallback-keys \
+                 route raises KakaoTalk."
             }
             Self::AxSendDisabled => {
                 "Run `openkakao-cli init --allow-chat \"<exact chat name>\"`, or set \
@@ -473,5 +476,7 @@ mod coded_tests {
             .fix()
             .contains("--open-if-needed"));
         assert!(ErrorCode::UserActive.fix().contains("--wait-idle"));
+        // The same code also reports a menu in the way, which no idle wait clears.
+        assert!(ErrorCode::UserActive.fix().contains("never Esc"));
     }
 }
