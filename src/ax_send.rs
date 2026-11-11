@@ -1092,7 +1092,10 @@ enum ComposerMode {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn composer_mode(description: Option<&str>) -> ComposerMode {
     match description.map(str::trim) {
-        Some(description) if description.ends_with("답장 메시지 입력") => {
+        Some(description)
+            if description.ends_with("답장 메시지 입력")
+                || description.ends_with("댓글 메시지 입력") =>
+        {
             ComposerMode::Reply
         }
         Some(description) if description.ends_with("수정 메시지 입력") => ComposerMode::Edit,
@@ -1102,11 +1105,12 @@ fn composer_mode(description: Option<&str>) -> ComposerMode {
 }
 
 /// The banner KakaoTalk shows above the composer in reply (`나에게 답장`,
-/// `<이름>에게 답장`) or edit (`메시지 수정`) mode.
+/// `<이름>에게 답장`; chats that name it 댓글 show `<이름>에게 댓글`) or edit
+/// (`메시지 수정`) mode.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn mode_banner(text: &str) -> ComposerMode {
     let text = text.trim();
-    if text.ends_with("에게 답장") {
+    if text.ends_with("에게 답장") || text.ends_with("에게 댓글") {
         ComposerMode::Reply
     } else if text == "메시지 수정" {
         ComposerMode::Edit
@@ -1529,6 +1533,9 @@ mod policy_tests {
         assert_eq!(composer_mode(Some("Message")), ComposerMode::Unknown);
         assert_eq!(mode_banner("나에게 답장"), ComposerMode::Reply);
         assert_eq!(mode_banner("Pearl 진주에게 답장"), ComposerMode::Reply);
+        // Group chats with threaded replies name the reply item 댓글 (KakaoTalk 26.9, measured 2026-11-11).
+        assert_eq!(composer_mode(Some("댓글 메시지 입력")), ComposerMode::Reply);
+        assert_eq!(mode_banner("Pearl 진주에게 댓글"), ComposerMode::Reply);
         assert_eq!(mode_banner("메시지 수정"), ComposerMode::Edit);
         assert_eq!(mode_banner("오후 3:14"), ComposerMode::Unknown);
     }
@@ -6928,15 +6935,18 @@ end run
     /// cancelled whenever it is found and the item is not pressed, and a menu
     /// left showing is cancelled again.
     fn press_bubble_menu_item(app: &AXUIElement, bubble: &AXUIElement, item: &str) -> Result<()> {
-        press_menu_item_or(app, bubble, item, ErrorCode::MenuNotFound)
+        press_menu_item_or(app, bubble, &[item], ErrorCode::MenuNotFound)
     }
 
     /// [`press_bubble_menu_item`], reporting a menu without `item` as
     /// `missing` (a delete scope KakaoTalk does not offer is not a lookup bug).
+    /// `labels` are tried in order and the first one the menu has exactly
+    /// once is pressed: KakaoTalk 26.9 names the reply item `답장` in 1:1
+    /// chats and `댓글` in group chats with threaded replies.
     fn press_menu_item_or(
         app: &AXUIElement,
         bubble: &AXUIElement,
-        item: &str,
+        labels: &[&str],
         missing: ErrorCode,
     ) -> Result<()> {
         let Some(menu) = show_context_menu(app, bubble)? else {
@@ -6953,10 +6963,17 @@ end run
             ));
         };
         let items = menu_items(&menu);
-        let found: Vec<_> = items
+        let item = labels.join("' or '");
+        let found: Vec<_> = labels
             .iter()
-            .filter(|(_, title)| title.as_deref().map(str::trim) == Some(item))
-            .collect();
+            .map(|label| {
+                items
+                    .iter()
+                    .filter(|(_, title)| title.as_deref().map(str::trim) == Some(*label))
+                    .collect::<Vec<_>>()
+            })
+            .find(|matches| !matches.is_empty())
+            .unwrap_or_default();
         let [(entry, _)] = found.as_slice() else {
             let _ = menu.perform_action(&CFString::new("AXCancel"));
             return Err(coded(
@@ -7090,7 +7107,12 @@ end run
         let row = ancestor_row(&bubble.text_area)
             .ok_or_else(|| anyhow!("could not find the bubble's row"))?;
         let before = row_reactions(&row);
-        press_menu_item_or(&app, &bubble.text_area, "리액션", ErrorCode::MenuNotFound)?;
+        press_menu_item_or(
+            &app,
+            &bubble.text_area,
+            &["리액션"],
+            ErrorCode::MenuNotFound,
+        )?;
         let deadline = Instant::now() + MENU_WAIT;
         let picker = loop {
             if let Some(picker) = find_popover(&row) {
@@ -7231,7 +7253,12 @@ end run
         require_send_approval(&window, chat_display_name, "reply in")?;
         let baseline = delivery_observations(&elements.message_table)?;
         focus.watch();
-        press_bubble_menu_item(&app, &bubble.text_area, "답장")?;
+        press_menu_item_or(
+            &app,
+            &bubble.text_area,
+            &["답장", "댓글"],
+            ErrorCode::MenuNotFound,
+        )?;
         let state = match wait_for_mode(&window, super::ComposerMode::Reply) {
             Ok(state) => state,
             Err(error) => return Err(error.context(leave_mode_note(&window))),
@@ -7805,7 +7832,7 @@ end run
             .ok()
             .and_then(|c| c.iter().next().map(|c| (*c).clone()))
             .unwrap_or_else(|| row.clone());
-        press_menu_item_or(app, &cell, "정보 변경", ErrorCode::MenuNotFound)?;
+        press_menu_item_or(app, &cell, &["정보 변경"], ErrorCode::MenuNotFound)?;
         trace(started, "정보 변경 pressed");
         let deadline = Instant::now() + MENU_WAIT;
         loop {
@@ -7856,7 +7883,7 @@ end run
             .ok()
             .and_then(|c| c.iter().next().map(|c| (*c).clone()))
             .unwrap_or_else(|| (*row).clone());
-        press_menu_item_or(&app, &cell, "채팅하기", ErrorCode::MenuNotFound)?;
+        press_menu_item_or(&app, &cell, &["채팅하기"], ErrorCode::MenuNotFound)?;
         drop(search);
         drop(tab);
         let deadline = Instant::now() + OPEN_CHAT_TIMEOUT;
@@ -8458,7 +8485,7 @@ end run
             .ok()
             .and_then(|c| c.iter().next().map(|c| (*c).clone()))
             .unwrap_or_else(|| (*row).clone());
-        press_menu_item_or(&app, &cell, "차단", ErrorCode::MenuNotFound)?;
+        press_menu_item_or(&app, &cell, &["차단"], ErrorCode::MenuNotFound)?;
         confirm_sheet(&tab.main, "채널 차단", "확인")?;
         let deadline = Instant::now() + VERIFY_TIMEOUT;
         loop {
@@ -8752,7 +8779,7 @@ end run
         press_menu_item_or(
             &app,
             &bubble.text_area,
-            scope.menu_item(),
+            &[scope.menu_item()],
             ErrorCode::DeleteUnavailable,
         )?;
         focus.restore();

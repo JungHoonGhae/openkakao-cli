@@ -1,7 +1,7 @@
 ---
 name: openkakao-cli
 description: >-
-  Work with OpenKakao CLI (`openkakao-cli` 1.19.1+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), list friends' birthdays (`ax-friends --birthdays`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "kakao birthday", "카톡 생일", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
+  Work with OpenKakao CLI (`openkakao-cli` 1.19.2+) for KakaoTalk on macOS: send text, photos and files, reply to, edit or delete a message, read a chat, open a chat window, sign a logged-out KakaoTalk back in (`ax-login`), set the tool up (`init`, `doctor`), detect incoming messages (`notif-watch`), list friends' birthdays (`ax-friends --birthdays`), also over SSH to the Mac that runs KakaoTalk. Trigger on `openkakao`, `local-send`, `local-send-file`, `local-send-photo`, `local-reply`, `local-edit`, `local-delete`, `local-leave-chat`, `ax-read`, `ax-login`, `allow_ax_send`, `allowed_send_chats`, "send kakao(talk)", "read kakao(talk)", "delete kakao(talk) message", "kakaotalk file", "kakao birthday", "카톡 생일", "focus-free", and the error codes `chat_window_not_open`, `delivery_uncertain`, `chat_dialog_open`, `delete_unavailable`, `user_active`, `file_type_refused`. Legacy terms (`send`, `read`, `chats`, `watch`, `delete`, `LOCO`, `login`) belong to the server-login path, which is broken on current builds; route them here too and use the AX commands instead.
 ---
 
 # OpenKakao CLI
@@ -44,7 +44,7 @@ openkakao-cli doctor --chat "<chat name>"                    # read-only: compos
 | Send text | `openkakao-cli local-send "<chat>" "<text>" -y --json` | ~0.4 s, verified by the new bubble. Newlines: `$'첫줄\n둘째줄'` (one bubble). Ends with the signature line `⌞ₛₑₙₜ ᵥᵢₐ ₒₚₑₙₖₐₖₐₒ` (`[send] signature` changes it, `--no-prefix` drops it) and an invisible watermark; `ax-read --json` marks such messages `via_openkakao` and `--match` ignores the watermark. A message KakaoTalk folds behind 전체보기 (over 500 UTF-16 units) is still verified. |
 | Send any file | `openkakao-cli local-send-file "<chat>" <path> -y --json` | docx, xlsx, pdf, zip, txt, images; up to `[ax] max_file_mb` (300). `sent` only once KakaoTalk finished the upload (the bubble shows 공유). A file outside the top level of Desktop/Documents/Downloads is hard-linked into `~/Downloads` and removed after the upload. |
 | Send a photo | `openkakao-cli local-send-photo "<chat>" <image> -y --json` | same path with image checks (50 MiB); ~2 s plus the upload. |
-| Reply to a message | `openkakao-cli local-reply "<chat>" "<text>" --to-last -y` or `--match "<exact bubble text>"` | experimental; needs the bubble's whole text; duplicates refuse. |
+| Reply to a message | `openkakao-cli local-reply "<chat>" "<text>" --to-last -y` or `--match "<exact bubble text>"` | experimental; needs the bubble's whole text; duplicates refuse. The default for answering someone: see "Answering a message" below. |
 | Edit your message | `openkakao-cli local-edit "<chat>" --match "<old exact text>" "<new text>" -y` | experimental; verified by the `수정됨` label; ~2 s. |
 | Delete a message | `openkakao-cli local-delete "<chat>" --match "<exact text>" --for-everyone -y` or `--for-me` | experimental; one scope is required. KakaoTalk offers 모든 대화 상대에게서 삭제 only for your own messages within 24 hours and never in the memo chat; otherwise `delete_unavailable` and nothing is deleted. Never fall back to `--for-me` without the user's say. |
 | Open a closed chat | add `--open-if-needed` to any command above | uses KakaoTalk's chat search (~3 s); marks the chat read. Several chats with the same name: `--pick N` (always asks the device owner). |
@@ -64,6 +64,16 @@ The user writes differently to each person, so tone is learned per chat. Before 
 - `declined`: write plainly; do not ask again.
 
 Show drafts for other people's chats to the user before sending, unless they gave the exact text or asked you to handle the conversation.
+
+## Answering a message: reply, not a new message
+
+When what you write answers one message in the chat (a question, a request, a file someone asked about, a "can you check …"), send it as a reply to that message with `local-reply`, so it carries the quote and the asker sees what it answers. A new message with `local-send` is for news nobody asked for, a follow-up to your own earlier message, or the user saying to post it as a new message.
+
+1. Find the message: `ax-read "<chat>" -n 20 --json`. Use the bubble the user pointed to, or the newest one from the person you are answering.
+2. Reply to it: `--to-last` when it is the newest bubble in the chat, otherwise `--match "<that bubble's whole text>"` (a long one: read it with `--expand` first). Several bubbles with the same text refuse; pick another of that person's bubbles only with the user's say.
+3. If the reply cannot be placed (`message_not_found`, `menu_not_found` after one retry, an `experimental` refusal), tell the user and ask before falling back to `local-send`. Do not silently post a plain message instead.
+
+In a group, a reply already tells the asker it is for them, so it needs no `@name` line. A new message meant for one person in a group starts with `@이름` as plain text: openkakao cannot create a real mention (one that notifies), so say so when the user expects a notification.
 
 ## Staying on a conversation
 
