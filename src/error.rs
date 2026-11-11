@@ -242,7 +242,9 @@ impl ErrorCode {
                 "KakaoTalk did not expose the expected menu in time, so nothing else was done (if a \
                  menu is showing, click elsewhere to dismiss it; never press Esc, which closes \
                  KakaoTalk windows). Retry, open the chat window yourself once, or use \
-                 --fallback-keys (raises KakaoTalk and double-clicks the row)."
+                 --fallback-keys (raises KakaoTalk and double-clicks the row). A chat-list row's \
+                 menu can also stay closed while KakaoTalk's main window is on another desktop \
+                 (seen on KakaoTalk 26.8): showing that desktop fixes it."
             }
             Self::StagingConflict => {
                 "A different file with this name is already in ~/Downloads. Move or copy your file \
@@ -278,8 +280,11 @@ impl ErrorCode {
                  Check the chat window and close a leftover reply/edit banner with its X (never Esc)."
             }
             Self::UserActive => {
-                "You were using the keyboard or mouse, so KakaoTalk was not raised. Retry when idle, \
-                 or lower the wait with --wait-idle <secs> (0 disables it)."
+                "The keyboard, the mouse or a KakaoTalk menu was in use, so nothing was pressed and \
+                 KakaoTalk was not raised. Retry once the keyboard and mouse have been idle for a few \
+                 seconds; a KakaoTalk menu left open closes with a click elsewhere (never Esc). \
+                 --wait-idle <secs> (0 disables it) only changes the wait before a --fallback-keys \
+                 route raises KakaoTalk."
             }
             Self::AxSendDisabled => {
                 "Run `openkakao-cli init --allow-chat \"<exact chat name>\"`, or set \
@@ -473,5 +478,7 @@ mod coded_tests {
             .fix()
             .contains("--open-if-needed"));
         assert!(ErrorCode::UserActive.fix().contains("--wait-idle"));
+        // The same code also reports a menu in the way, which no idle wait clears.
+        assert!(ErrorCode::UserActive.fix().contains("never Esc"));
     }
 }

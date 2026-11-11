@@ -141,7 +141,8 @@ another desktop:
 
 - Verify that a context menu opened with `AXShowMenu` belongs to the target
   element (its menu-layer window should touch the element's frame); today a
-  pre-existing menu is refused and a cursor over the menu aborts the press.
+  pre-existing menu is refused and a cursor over the menu aborts the press
+  while the keyboard or mouse is in use.
 - Text-send and reply verification now anchor on the baseline's newest row
   (same AX element, same content), as the attachment path does. Confirm on a
   device that a repeated short message pushed out of the 12-row tail verifies
