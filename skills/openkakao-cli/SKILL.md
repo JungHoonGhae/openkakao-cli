@@ -151,6 +151,7 @@ AX lists only the windows of the active Space. From 1.19.0 the CLI also reaches 
 - A window counts once an Accessibility client has seen it: one that went to another desktop before any openkakao-cli command ran while it was showing stays `main_window_not_visible` / `chat_window_not_open` until the user views it once (or uses it last).
 - Text, reply, edit and delete work in a chat window on another desktop. Files, photos and exports do not (KakaoTalk's file panel takes no choice there): they stop with `chat_window_on_other_space`.
 - A chat that `--open-if-needed` opens appears on the desktop the user is viewing (macOS decides, and it cannot be moved). Keep the chats you send to open on KakaoTalk's desktop so nothing shows on the user's screen.
+- On KakaoTalk 26.8 (macOS 26.5.2) `--open-if-needed` works only while KakaoTalk's main window is on the desktop in view: from another desktop the chat-list row's menu does not open and the command ends with `menu_not_found`. Ask the user to show KakaoTalk's desktop or to open the chat once. Chats that are already open are not affected.
 - `doctor` says which windows are on another Space (`Main window`, `Chat window` with `--chat`, and the count in `Windows on other Spaces`).
 - Only when `doctor`'s `Spaces` check warns that this macOS lacks the lookup: `openkakao-cli init --all-spaces` (Dock → Options → Assign To → All Desktops; restarts the Dock) makes windows visible from every desktop, but they then follow every desktop switch. Ask first; it is a preference of the person using the Mac.
 

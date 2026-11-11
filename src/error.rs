@@ -242,7 +242,9 @@ impl ErrorCode {
                 "KakaoTalk did not expose the expected menu in time, so nothing else was done (if a \
                  menu is showing, click elsewhere to dismiss it; never press Esc, which closes \
                  KakaoTalk windows). Retry, open the chat window yourself once, or use \
-                 --fallback-keys (raises KakaoTalk and double-clicks the row)."
+                 --fallback-keys (raises KakaoTalk and double-clicks the row). A chat-list row's \
+                 menu can also stay closed while KakaoTalk's main window is on another desktop \
+                 (seen on KakaoTalk 26.8): showing that desktop fixes it."
             }
             Self::StagingConflict => {
                 "A different file with this name is already in ~/Downloads. Move or copy your file \
