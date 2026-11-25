@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.19.4] - 2026-11-25
+## [1.19.4] - 2026-11-26
 
 ### Fixed
 - **`ax-read` shows file messages from KakaoTalk 26.10 again** ([#91](https://github.com/JungHoonGhae/openkakao-cli/issues/91)). KakaoTalk 26.10 draws a file as a group described 파일 (name, validity, size, 저장, 다른 이름으로 저장) and no 공유 button, so `ax-read` skipped the row as if no message were there. It now reads that group as `[파일]`, with its sender and time. `local-send-file` uses the same rule to find the bubble it sent, and also counts a file card that offers 저장 (and shows no upload in progress) as uploaded, where it waited for 공유 before.
