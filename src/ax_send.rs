@@ -311,6 +311,21 @@ pub(crate) fn is_verified_delivery(
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const FILE_BUBBLE_PLACEHOLDER: &str = "[파일]";
+/// `ax-read`'s text for a message row of a kind it does not know.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const UNKNOWN_BUBBLE_PLACEHOLDER: &str = "[알 수 없음]";
+
+/// The chat name in a chat-list row's label. KakaoTalk 26.10 puts the chat's
+/// kind before the name of the memo chat and of open chats ("나와의 채팅,
+/// 김철수", "오픈채팅, 모임"; #92), while the window title and the chat
+/// search carry the name alone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn chat_name_in_list(label: &str) -> &str {
+    ["나와의 채팅, ", "오픈채팅, "]
+        .iter()
+        .find_map(|kind| label.strip_prefix(kind))
+        .unwrap_or(label)
+}
 
 /// What `local-send-file` / `local-send-photo` deliver. Photos keep their
 /// image-content checks, JPEG/PNG-only clipboard staging for `--fallback-keys`,
@@ -2061,6 +2076,25 @@ mod policy_tests {
     }
 
     #[test]
+    fn a_chat_list_label_is_matched_by_the_name_without_its_26_10_kind() {
+        // The memo chat and open chats carry their kind (#92); the window
+        // title and the chat search use the name alone.
+        assert_eq!(chat_name_in_list("나와의 채팅, 김철수"), "김철수");
+        assert_eq!(chat_name_in_list("오픈채팅, 주말 등산"), "주말 등산");
+        assert_eq!(chat_name_in_list("가족"), "가족");
+        // Only a leading kind is a kind.
+        assert_eq!(
+            chat_name_in_list("가족, 오픈채팅, 모임"),
+            "가족, 오픈채팅, 모임"
+        );
+        let rows = vec![Some(chat_name_in_list("나와의 채팅, 김철수").to_string())];
+        assert!(matches!(
+            match_chat_row(&rows, "김철수"),
+            ChatMatch::Found(0)
+        ));
+    }
+
+    #[test]
     fn clipboard_staging_keeps_photos_to_jpeg_and_png_but_allows_any_file() {
         use std::path::Path;
         assert!(AttachmentKind::Photo.clipboard_allows(Path::new("/tmp/a.JPG")));
@@ -3283,7 +3317,14 @@ mod imp {
     /// match `find_first` makes). Avatars, previews, timestamps and badges
     /// after the name are never fetched.
     fn chat_list_rows(table: &AXUIElement) -> Result<Vec<(AXUIElement, Option<String>)>> {
-        rows_with_label(table, &["AXStaticText"], "chat list names")
+        let rows = rows_with_label(table, &["AXStaticText"], "chat list names")?;
+        Ok(rows
+            .into_iter()
+            .map(|(row, label)| {
+                let name = label.map(|label| super::chat_name_in_list(&label).to_string());
+                (row, name)
+            })
+            .collect())
     }
 
     /// Every `AXRow` under `container` with the value of its first descendant
@@ -5070,8 +5111,9 @@ end run
     /// The newest `count` message bubbles of a chat window, in chronological
     /// order. A row with an `AXTextArea` is a text message; a row with no
     /// `AXTextArea` but an `AXImage` descendant becomes the placeholder
-    /// "[사진]"; a row with a share-labeled `AXButton` ("공유") becomes
-    /// "[파일]". Rows matching none of these (date separators, system notices)
+    /// "[사진]"; a row with a share-labeled `AXButton` ("공유") or a 26.10
+    /// file card becomes "[파일]". Any other row that shows a sender or a
+    /// clock is "[알 수 없음]"; the rest (date separators, system notices)
     /// are skipped.
     fn read_recent_messages(window: &AXUIElement, count: usize) -> Result<Vec<AxMessage>> {
         let snap = snapshot_shallow(window)?;
@@ -5080,14 +5122,13 @@ end run
         };
         let center = table.center_x();
         let mut found = 0;
+        let read =
+            |row: &AxNode| message_from_row(row, center).or_else(|| unknown_message(row, center));
         let (rows, _) = tail_rows(&table.element, |row| {
-            found += usize::from(message_from_row(row, center).is_some());
+            found += usize::from(read(row).is_some());
             found >= count
         })?;
-        let mut messages: Vec<AxMessage> = rows
-            .iter()
-            .filter_map(|row| message_from_row(row, center))
-            .collect();
+        let mut messages: Vec<AxMessage> = rows.iter().filter_map(read).collect();
         super::carry_senders(&mut messages);
         Ok(messages)
     }
@@ -5176,6 +5217,37 @@ end run
     fn message_from_row(row: &AxNode, table_center_x: Option<f64>) -> Option<AxMessage> {
         let (text, bubble) = message_row_text(row)?;
         let outgoing = row_is_outgoing(row, bubble, table_center_x);
+        Some(message_in_row(row, text, bubble, outgoing))
+    }
+
+    /// A message row of a kind `message_row_text` does not know: it shows a
+    /// 프로필 button (an incoming run's first message) or a clock. Read as
+    /// [`super::UNKNOWN_BUBBLE_PLACEHOLDER`] rather than skipped, so a
+    /// KakaoTalk change that drops a kind shows instead of hiding it (#91).
+    /// `ax-read` only: delivery checks never count these rows.
+    fn unknown_message(row: &AxNode, table_center_x: Option<f64>) -> Option<AxMessage> {
+        let incoming = has_profile_button(row);
+        if !incoming && time_label(row).is_none() {
+            return None;
+        }
+        let outgoing = !incoming && row_is_outgoing(row, row, table_center_x);
+        Some(message_in_row(
+            row,
+            super::UNKNOWN_BUBBLE_PLACEHOLDER.to_string(),
+            row,
+            outgoing,
+        ))
+    }
+
+    fn has_profile_button(row: &AxNode) -> bool {
+        let mut buttons = Vec::new();
+        row.find_all("AXButton", &mut buttons);
+        buttons
+            .iter()
+            .any(|button| button.description.as_deref() == Some("프로필"))
+    }
+
+    fn message_in_row(row: &AxNode, text: String, bubble: &AxNode, outgoing: bool) -> AxMessage {
         // Same-minute messages show the clock only on the last one; a file
         // row's other texts (name, validity, size) are never a time.
         // The clock label's AXHelp is its date (26.8: "2026. 11. 7.").
@@ -5198,24 +5270,19 @@ end run
                     .filter(|t| t.help.is_some())
             })
             .and_then(stamp);
-        Some(AxMessage {
+        AxMessage {
             time,
             sender: (!outgoing).then(|| sender_label(row)).flatten(),
             text,
             outgoing,
-        })
+        }
     }
 
     /// The sender's name on the first bubble of an incoming run: the row
     /// shows a 프로필 button and the name as its first non-clock text
     /// (26.8, measured 2026-11-07).
     fn sender_label(row: &AxNode) -> Option<String> {
-        let mut buttons = Vec::new();
-        row.find_all("AXButton", &mut buttons);
-        if !buttons
-            .iter()
-            .any(|button| button.description.as_deref() == Some("프로필"))
-        {
+        if !has_profile_button(row) {
             return None;
         }
         let mut texts = Vec::new();
@@ -5509,6 +5576,11 @@ end run
         {
             return Some((super::FILE_BUBBLE_PLACEHOLDER.to_string(), button));
         }
+        // KakaoTalk 26.10 draws no 공유 button; checked after it, so rows of
+        // earlier versions read as before.
+        if let Some(card) = file_card(row) {
+            return Some((super::FILE_BUBBLE_PLACEHOLDER.to_string(), card));
+        }
         // A file still uploading has no share button yet (measured 2026-11-06
         // with a 30 MB file: icon, name, "업로드 중", 취소).
         if let Some(progress) = uploading_label(row) {
@@ -5516,6 +5588,28 @@ end run
         }
 
         None
+    }
+
+    /// KakaoTalk 26.10's file card: an `AXGroup` described 파일 holding the
+    /// name, validity and size texts and its 저장 / 다른 이름으로 저장
+    /// buttons, with no 공유 button in the row (reported in #91).
+    fn file_card(row: &AxNode) -> Option<&AxNode> {
+        let mut groups = Vec::new();
+        row.find_all("AXGroup", &mut groups);
+        groups
+            .into_iter()
+            .find(|group| group.description.as_deref() == Some("파일"))
+    }
+
+    /// A 26.10 file card that offers 저장: KakaoTalk has the whole file.
+    fn saveable_file_card(row: &AxNode) -> bool {
+        file_card(row).is_some_and(|card| {
+            let mut buttons = Vec::new();
+            card.find_all("AXButton", &mut buttons);
+            buttons
+                .iter()
+                .any(|button| button.description.as_deref() == Some("저장"))
+        })
     }
 
     /// Find exactly one already-open chat window by its full title. A substring
@@ -6424,7 +6518,10 @@ end run
                 rows.iter()
                     .rev()
                     .find(|row| outgoing_attachment(row))
-                    .is_some_and(|row| has_share_button(row) && uploading_label(row).is_none())
+                    .is_some_and(|row| {
+                        (has_share_button(row) || saveable_file_card(row))
+                            && uploading_label(row).is_none()
+                    })
             });
             match finished {
                 Ok(true) => return UploadEnd::Finished,
@@ -9047,7 +9144,7 @@ end run
         // The first static text is the chat name (same convention as
         // open_chat).
         let name_node = static_texts.first()?;
-        let name = name_node.value.clone()?;
+        let name = super::chat_name_in_list(name_node.value.as_deref()?).to_string();
         // Among the remaining static texts, a whole integer is the member
         // count when it sits on the name's line and the unread badge when it
         // sits below it (26.8: same y vs about 20 px lower, measured
@@ -9786,6 +9883,127 @@ end run
             std::fs::write(&staged_path, b"someone else's").unwrap();
             drop(replaced);
             assert_eq!(std::fs::read(&staged_path).unwrap(), b"someone else's");
+        }
+
+        /// One AX node of a test tree: role, description, value, x and width.
+        fn node(
+            role: &str,
+            description: Option<&str>,
+            value: Option<&str>,
+            frame: Option<(f64, f64)>,
+            children: Vec<AxNode>,
+        ) -> AxNode {
+            // Each node its own element, as in a real tree (the clock is
+            // told apart from the card by identity).
+            static NEXT_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+            let pid = NEXT_PID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut node = AxNode::leaf(&AXUIElement::application(pid), role.to_string());
+            node.description = description.map(str::to_string);
+            node.value = value.map(str::to_string);
+            node.position_x = frame.map(|f| f.0);
+            node.width = frame.map(|f| f.1);
+            node.children = children;
+            node
+        }
+
+        /// The incoming file row KakaoTalk 26.10 draws (#91), with the card
+        /// left of the clock.
+        fn file_row_26_10() -> AxNode {
+            let text = |value: &str, x: f64| {
+                node("AXStaticText", None, Some(value), Some((x, 120.0)), vec![])
+            };
+            let button =
+                |desc: &str, x: f64| node("AXButton", Some(desc), None, Some((x, 40.0)), vec![]);
+            let card = node(
+                "AXGroup",
+                Some("파일"),
+                None,
+                Some((60.0, 240.0)),
+                vec![
+                    text("보고서.zip", 70.0),
+                    text("유효기간: ~2026. 12. 9.", 70.0),
+                    text("용량: 32.0MB", 70.0),
+                    button("저장", 70.0),
+                    button("다른 이름으로 저장", 160.0),
+                ],
+            );
+            let cell = node(
+                "AXCell",
+                None,
+                None,
+                None,
+                vec![
+                    button("프로필", 10.0),
+                    text("이재연", 60.0),
+                    card,
+                    text("오후 1:08", 310.0),
+                ],
+            );
+            node("AXRow", None, None, Some((0.0, 800.0)), vec![cell])
+        }
+
+        #[test]
+        fn a_26_10_file_card_reads_as_a_file_from_its_sender() {
+            let row = file_row_26_10();
+            let message = message_from_row(&row, Some(400.0)).expect("a file message");
+            assert_eq!(message.text, "[파일]");
+            assert!(!message.outgoing);
+            assert_eq!(message.sender.as_deref(), Some("이재연"));
+            assert_eq!(message.time.as_deref(), Some("오후 1:08"));
+            // 저장 is offered once KakaoTalk has the whole file.
+            assert!(saveable_file_card(&row));
+        }
+
+        #[test]
+        fn a_row_of_an_unknown_kind_is_shown_not_skipped() {
+            let clock = node(
+                "AXStaticText",
+                None,
+                Some("오후 2:01"),
+                Some((310.0, 50.0)),
+                vec![],
+            );
+            let profile = node("AXButton", Some("프로필"), None, Some((10.0, 40.0)), vec![]);
+            let name = node(
+                "AXStaticText",
+                None,
+                Some("구가영"),
+                Some((60.0, 60.0)),
+                vec![],
+            );
+            let poll = node("AXGroup", Some("투표"), None, Some((60.0, 240.0)), vec![]);
+            let row = node(
+                "AXRow",
+                None,
+                None,
+                Some((0.0, 800.0)),
+                vec![node(
+                    "AXCell",
+                    None,
+                    None,
+                    None,
+                    vec![profile, name, poll, clock],
+                )],
+            );
+            assert!(message_from_row(&row, Some(400.0)).is_none());
+            let message = unknown_message(&row, Some(400.0)).expect("shown");
+            assert_eq!(message.text, "[알 수 없음]");
+            assert_eq!(message.sender.as_deref(), Some("구가영"));
+            // A date separator shows neither a sender nor a clock.
+            let separator = node(
+                "AXRow",
+                None,
+                None,
+                None,
+                vec![node(
+                    "AXStaticText",
+                    None,
+                    Some("2026년 11월 20일 금요일"),
+                    None,
+                    vec![],
+                )],
+            );
+            assert!(unknown_message(&separator, Some(400.0)).is_none());
         }
 
         #[test]
