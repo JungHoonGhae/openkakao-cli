@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.4] - 2026-11-25
+
+### Fixed
+- **`ax-read` shows file messages from KakaoTalk 26.10 again** ([#91](https://github.com/JungHoonGhae/openkakao-cli/issues/91)). KakaoTalk 26.10 draws a file as a group described 파일 (name, validity, size, 저장, 다른 이름으로 저장) and no 공유 button, so `ax-read` skipped the row as if no message were there. It now reads that group as `[파일]`, with its sender and time. `local-send-file` uses the same rule to find the bubble it sent, and also counts a file card that offers 저장 (and shows no upload in progress) as uploaded, where it waited for 공유 before.
+- **`ax-read` no longer drops a message of a kind it does not know.** A row that shows a sender or a clock but no text, photo or file now reads `[알 수 없음]`, so a KakaoTalk change like the one above shows up instead of hiding messages. Delivery checks of sends do not count these rows.
+- **Chats are found by name again in KakaoTalk 26.10's chat list** ([#92](https://github.com/JungHoonGhae/openkakao-cli/issues/92)). KakaoTalk 26.10 puts the chat's kind before the name of the memo chat and of open chats (`나와의 채팅, <name>`, `오픈채팅, <name>`), while their windows and the chat search use the name alone. `--open-if-needed`, `local-mark-read`, `local-leave-chat` and the `chat_not_found` hint compared the label whole and found nothing; `ax-chats` listed the label as the name. Both kinds are now left out of the name.
+
+### Notes
+- Written from the trees in the reports (macOS 27.3, KakaoTalk 26.10.0); not yet run on a Mac with 26.10. The upload rule for `local-send-file` was seen on a received file only, so on 26.10 a file send may still end with `delivery_uncertain` after the upload wait if KakaoTalk draws our own finished files differently.
+- `local-chats` and `local-read` on 26.10 ([#93](https://github.com/JungHoonGhae/openkakao-cli/issues/93)) are not fixed here: KakaoTalk moved the preferences they read the user ID from, and where to is not known yet.
+
 ## [1.19.3] - 2026-11-12
 
 ### Added
